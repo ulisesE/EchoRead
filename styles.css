@@ -829,7 +829,7 @@ body {
 #reader-workspace {
     flex: 1;
     display: flex;
-    align-items: center;
+    align-items: stretch;
     position: relative;
     background-color: var(--reader-bg);
     overflow: hidden;
@@ -1102,9 +1102,28 @@ body {
         font-size: 0.9rem;
     }
     
-    /* Hide floating arrows on mobile since tap margins will handle navigation */
+    /* Position page turn buttons at the bottom corners on mobile */
     .nav-arrow-btn {
-        display: none !important;
+        display: flex !important;
+        position: absolute;
+        bottom: 12px !important;
+        top: auto !important;
+        transform: none !important;
+        width: 44px !important;
+        height: 44px !important;
+        background-color: var(--bg-surface-glass) !important;
+        border: 1px solid var(--border-color) !important;
+        z-index: 100 !important;
+        opacity: 0.85 !important;
+        box-shadow: var(--shadow-md) !important;
+    }
+    
+    .nav-arrow-btn.left {
+        left: 16px !important;
+    }
+    
+    .nav-arrow-btn.right {
+        right: 16px !important;
     }
     
     #viewer-container {
@@ -1258,6 +1277,29 @@ body {
     
     #toc-list {
         max-height: 40vh;
+    }
+}
+
+/* Disable hover overlay on touch screens and show static action buttons */
+@media (hover: none) {
+    .card-overlay {
+        opacity: 1 !important;
+        background-color: transparent !important;
+        pointer-events: auto !important;
+        top: auto !important;
+        bottom: 8px !important;
+        right: 8px !important;
+        left: auto !important;
+        width: auto !important;
+        height: auto !important;
+        display: flex !important;
+        gap: 8px !important;
+    }
+    
+    .overlay-btn {
+        width: 38px !important;
+        height: 38px !important;
+        box-shadow: var(--shadow-md) !important;
     }
 }
 
