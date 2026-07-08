@@ -295,6 +295,10 @@ class TTSManager {
 
     speakParagraph(index) {
         if (!this.synth) return;
+        if (this.currentUtterance) {
+            this.currentUtterance.onend = null;
+            this.currentUtterance.onerror = null;
+        }
         this.synth.cancel();
         
         if (index < 0) index = 0;
@@ -380,6 +384,10 @@ class TTSManager {
         
         if (this.isPlaying) {
             // Pause
+            if (this.currentUtterance) {
+                this.currentUtterance.onend = null;
+                this.currentUtterance.onerror = null;
+            }
             this.synth.cancel(); // cancel current, set state to paused
             this.isPlaying = false;
             this.updatePlayerUI();
@@ -394,6 +402,10 @@ class TTSManager {
         if (!this.synth) return;
         this.isPlaying = false;
         this.autoPlayNextPage = false;
+        if (this.currentUtterance) {
+            this.currentUtterance.onend = null;
+            this.currentUtterance.onerror = null;
+        }
         this.synth.cancel();
         this.clearHighlights();
         this.currentIndex = 0;
@@ -402,6 +414,10 @@ class TTSManager {
     }
     
     stopSilence() {
+        if (this.currentUtterance) {
+            this.currentUtterance.onend = null;
+            this.currentUtterance.onerror = null;
+        }
         if (this.synth) {
             this.synth.cancel();
         }
