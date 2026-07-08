@@ -138,6 +138,10 @@ class TTSManager {
         
         this.autoPlayNextPage = false;
         this.currentDoc = null;
+        this.targetSpeakIndex = null;
+        this.skipVisibilityCheck = false;
+        this.currentPageIndex = 0;
+        this.isUpdatingLocationFromTTS = false;
         
         // Setup voices
         if (this.synth) {
@@ -266,21 +270,42 @@ class TTSManager {
                 return true;
             });
             
-            // Add click events to text elements for direct playback targeting
+            // Generate CFI for each element
+            const location = this.app.reader.rendition ? this.app.reader.rendition.currentLocation() : null;
+            const section = location && location.start ? this.app.reader.book.section(location.start.href) : null;
+            
+            // Add click events and attach CFI to text elements
             this.textElements.forEach((el, index) => {
                 el.style.cursor = 'pointer';
                 el.addEventListener('click', (e) => {
                     e.stopPropagation();
                     this.speakParagraph(index);
                 });
+                
+                if (section) {
+                    try {
+                        el.cfi = section.cfiFromElement(el);
+                    } catch (err) {
+                        console.warn("Failed to generate CFI for element", el, err);
+                        el.cfi = null;
+                    }
+                } else {
+                    el.cfi = null;
+                }
             });
         }
         
+        // If we are updating location internally from TTS, skip rebuilding state to prevent loops
+        if (this.isUpdatingLocationFromTTS) {
+            this.isUpdatingLocationFromTTS = false;
+            return;
+        }
+        
         // Find the index of the first visible paragraph on the current page view
-        // Wait 150ms for epub.js layout to settle before measuring bounding boxes
+        // Wait 150ms for epub.js layout to settle before measuring
         setTimeout(() => {
-            const firstVisibleIndex = this.findFirstVisibleParagraph();
-            this.currentIndex = firstVisibleIndex;
+            this.currentPageIndex = this.getCurrentReaderPageIndex();
+            this.currentIndex = this.findFirstParagraphOnPage(this.currentPageIndex);
             this.updatePositionUI();
             
             // If it was playing, resume speaking from the first visible paragraph
@@ -288,6 +313,11 @@ class TTSManager {
                 this.autoPlayNextPage = false;
                 this.isPlaying = true;
                 this.updatePlayerUI();
+                
+                // If it is a new chapter, skip the first visibility check to prevent jumping back
+                if (!isSameDoc) {
+                    this.skipVisibilityCheck = true;
+                }
                 this.speakParagraph(this.currentIndex);
             } else {
                 this.highlightElement(this.currentIndex);
@@ -295,38 +325,50 @@ class TTSManager {
         }, 150);
     }
 
-    findFirstVisibleParagraph() {
-        if (this.textElements.length === 0) return 0;
-        
+    getParagraphPageIndex(el) {
+        if (!el) return 0;
         const contents = this.app.reader.rendition ? this.app.reader.rendition.getContents()[0] : null;
         if (!contents) return 0;
         
+        const viewportHeight = contents.document.documentElement.clientHeight || window.innerHeight;
+        
+        // Find absolute top position of the element inside the document
+        let top = 0;
+        let current = el;
+        while (current && current.offsetParent) {
+            top += current.offsetTop || 0;
+            current = current.offsetParent;
+        }
+        
+        return Math.floor(top / (viewportHeight || 600));
+    }
+
+    getCurrentReaderPageIndex() {
+        if (!this.app.reader.rendition) return 0;
+        const contents = this.app.reader.rendition.getContents()[0];
+        if (!contents) return 0;
+        
+        const scrollLeft = contents.document.documentElement.scrollLeft || contents.document.body.scrollLeft || 0;
         const viewportWidth = contents.document.documentElement.clientWidth || window.innerWidth;
         
-        // In paginated flow, find the first element whose left bound is inside the viewport
-        if (this.app.reader.rendition.settings.flow === 'paginated') {
-            for (let i = 0; i < this.textElements.length; i++) {
-                const rect = this.textElements[i].getBoundingClientRect();
-                // Allow a small margin of error (e.g. 5px)
-                if (rect.left >= -5 && rect.left < viewportWidth - 5) {
-                    return i;
-                }
-            }
-        } else {
-            // In scrolled flow, find the first element that is within the viewport height
-            const viewportHeight = contents.document.documentElement.clientHeight || window.innerHeight;
-            for (let i = 0; i < this.textElements.length; i++) {
-                const rect = this.textElements[i].getBoundingClientRect();
-                if (rect.top >= -5 && rect.top < viewportHeight - 5) {
-                    return i;
-                }
+        return Math.round(scrollLeft / (viewportWidth || 360));
+    }
+
+    findFirstParagraphOnPage(pageIndex) {
+        for (let i = 0; i < this.textElements.length; i++) {
+            if (this.getParagraphPageIndex(this.textElements[i]) === pageIndex) {
+                return i;
             }
         }
         return 0;
     }
 
-    speakParagraph(index) {
+    speakParagraph(index, useFallbackVoice = false) {
         if (!this.synth) return;
+        
+        const skipVis = this.skipVisibilityCheck;
+        this.skipVisibilityCheck = false; // Reset immediately
+        
         if (this.currentUtterance) {
             this.currentUtterance.onend = null;
             this.currentUtterance.onerror = null;
@@ -355,21 +397,20 @@ class TTSManager {
         
         const el = this.textElements[index];
         
-        // Check element horizontal visibility if in paginated mode
-        const contents = this.app.reader.rendition ? this.app.reader.rendition.getContents()[0] : null;
-        if (contents && this.app.reader.rendition.settings.flow === 'paginated') {
-            const rect = el.getBoundingClientRect();
-            const viewportWidth = contents.document.documentElement.clientWidth || window.innerWidth;
+        // Check page transitions if in paginated mode
+        if (!skipVis && el.cfi && this.app.reader.rendition && this.app.reader.rendition.settings.flow === 'paginated') {
+            const targetPageIndex = this.getParagraphPageIndex(el);
             
-            // If the element is on the next page, just flip the page.
-            // The relocated event will trigger setDocument which automatically starts reading the new page top paragraph!
-            if (rect.left >= viewportWidth - 5) {
-                this.app.reader.nextPage();
-                return;
-            }
-            // If the element is on the previous page
-            else if (rect.right <= 5) {
-                this.app.reader.prevPage();
+            // If the element is on a different page, use CFI navigation to turn page
+            if (targetPageIndex !== this.currentPageIndex) {
+                this.currentPageIndex = targetPageIndex;
+                this.isUpdatingLocationFromTTS = true;
+                
+                this.app.reader.rendition.display(el.cfi).then(() => {
+                    if (this.isPlaying) {
+                        this.speakParagraph(index, useFallbackVoice);
+                    }
+                });
                 return;
             }
         }
@@ -379,14 +420,23 @@ class TTSManager {
         const text = el.textContent.trim();
         
         this.currentUtterance = new SpeechSynthesisUtterance(text);
-        if (this.selectedVoice) {
-            this.currentUtterance.voice = this.selectedVoice;
+        
+        // Determine voice to use: fallback to a local Spanish voice (or system default) if cloud voice failed
+        let voiceToUse = this.selectedVoice;
+        if (useFallbackVoice) {
+            const localSpanishVoice = this.voices.find(v => v.localService && v.lang.toLowerCase().startsWith('es'));
+            voiceToUse = localSpanishVoice || null;
+            console.warn("Using fallback local voice:", voiceToUse ? voiceToUse.name : "System default");
+        }
+        
+        if (voiceToUse) {
+            this.currentUtterance.voice = voiceToUse;
         }
         this.currentUtterance.rate = this.speed;
         
         this.currentUtterance.onend = () => {
             if (this.isPlaying) {
-                this.speakParagraph(this.currentIndex + 1);
+                this.speakParagraph(this.currentIndex + 1, useFallbackVoice);
             }
         };
         
@@ -394,8 +444,13 @@ class TTSManager {
             if (e.error !== 'interrupted') {
                 console.warn("TTS Utterance boundary/error: ", e);
             }
+            if (e.error === 'synthesis-failed' && !useFallbackVoice && this.selectedVoice) {
+                console.warn("TTS cloud voice failed. Retrying with local Spanish fallback voice...");
+                this.speakParagraph(this.currentIndex, true); // Retry current paragraph with fallback
+                return;
+            }
             if (e.error !== 'interrupted' && this.isPlaying) {
-                this.speakParagraph(this.currentIndex + 1);
+                this.speakParagraph(this.currentIndex + 1, useFallbackVoice);
             }
         };
         
@@ -427,6 +482,7 @@ class TTSManager {
         if (!this.synth) return;
         this.isPlaying = false;
         this.autoPlayNextPage = false;
+        this.targetSpeakIndex = null;
         if (this.currentUtterance) {
             this.currentUtterance.onend = null;
             this.currentUtterance.onerror = null;
@@ -535,6 +591,10 @@ class ReaderManager {
                 // Get TOC (Table of Contents)
                 this.populateTOC();
                 
+                // Lock viewer height to workspace client height in pixels to prevent mobile iframe height expansion
+                const workspaceHeight = document.getElementById('reader-workspace').clientHeight || 600;
+                document.getElementById('viewer').style.height = `${workspaceHeight}px`;
+                
                 // Create Rendition inside viewer
                 const settings = this.app.storage.getSettings();
                 this.rendition = this.book.renderTo("viewer", {
@@ -542,7 +602,7 @@ class ReaderManager {
                     height: "100%",
                     spread: "none",
                     flow: "paginated",
-                    sandbox: ["allow-same-origin", "allow-scripts"]
+                    allowScriptedContent: true
                 });
                 
                 // Inject custom CSS styling inside the iframe
@@ -575,14 +635,23 @@ class ReaderManager {
                         "body": {
                             "font-family": `${settings.fontFamily} !important`,
                             "line-height": "1.6 !important",
-                            "padding": "0 24px !important",
+                            "padding": "12px 24px !important",
+                            "margin": "0 !important",
                             "box-sizing": "border-box !important"
                         },
                         "p": {
                             "margin-bottom": "1.2em !important",
                             "font-size": "inherit !important",
                             "line-height": "1.6 !important",
-                            "word-wrap": "break-word !important"
+                            "word-wrap": "break-word !important",
+                            "break-inside": "avoid !important",
+                            "-webkit-column-break-inside": "avoid !important",
+                            "page-break-inside": "avoid !important"
+                        },
+                        "li": {
+                            "break-inside": "avoid !important",
+                            "-webkit-column-break-inside": "avoid !important",
+                            "page-break-inside": "avoid !important"
                         },
                         "img": {
                             "max-width": "100% !important",
@@ -663,6 +732,7 @@ class ReaderManager {
     unloadBook() {
         this.app.tts.stopSilence();
         this.app.tts.currentDoc = null; // Reset document reference
+        this.app.tts.targetSpeakIndex = null; // Clear lock
         if (this.rendition) {
             this.rendition.destroy();
             this.rendition = null;
@@ -821,6 +891,8 @@ class UIManager {
             clearTimeout(resizeTimeout);
             resizeTimeout = setTimeout(() => {
                 if (this.app.reader.rendition) {
+                    const workspaceHeight = document.getElementById('reader-workspace').clientHeight || 600;
+                    document.getElementById('viewer').style.height = `${workspaceHeight}px`;
                     this.app.reader.rendition.resize();
                 }
             }, 250);
