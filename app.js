@@ -137,6 +137,7 @@ class TTSManager {
         this.isPlaying = false;
         
         this.autoPlayNextPage = false;
+        this.currentDoc = null;
         
         // Setup voices
         if (this.synth) {
@@ -167,10 +168,7 @@ class TTSManager {
         // Sort voices
         const sorted = [...voices].sort((a, b) => a.lang.localeCompare(b.lang) || a.name.localeCompare(b.name));
         
-        // Find default or saved voice
-        let defaultIndex = -1;
-        const settings = this.app.storage.getSettings();
-        
+        // Populate dropdown
         sorted.forEach((voice, index) => {
             const option = document.createElement('option');
             option.value = index;
@@ -179,19 +177,38 @@ class TTSManager {
                 option.textContent += ' [Local]';
             }
             select.appendChild(option);
-            
-            // Check matching criteria
-            if (settings.voiceName && voice.name === settings.voiceName) {
-                defaultIndex = index;
-            } else if (defaultIndex === -1 && (voice.lang.startsWith('es-') || voice.lang === 'es')) {
-                defaultIndex = index; // Spanish default fallback
-            }
         });
+
+        // Find default or saved voice
+        let defaultIndex = -1;
+        const settings = this.app.storage.getSettings();
         
+        // 1. Try to restore saved voice
+        if (settings.voiceName) {
+            defaultIndex = sorted.findIndex(v => v.name === settings.voiceName);
+        }
+        
+        // 2. Try to find Mexican Spanish (es-MX)
         if (defaultIndex === -1) {
-            // Find system default voice
+            defaultIndex = sorted.findIndex(v => {
+                const lang = v.lang.toLowerCase().replace('_', '-');
+                return lang === 'es-mx' || lang.startsWith('es-mx');
+            });
+        }
+        
+        // 3. Try to find any Spanish voice (es-*)
+        if (defaultIndex === -1) {
+            defaultIndex = sorted.findIndex(v => v.lang.toLowerCase().startsWith('es'));
+        }
+        
+        // 4. Try to find system default voice
+        if (defaultIndex === -1) {
             defaultIndex = sorted.findIndex(v => v.default);
-            if (defaultIndex === -1) defaultIndex = 0;
+        }
+        
+        // 5. Fallback to index 0
+        if (defaultIndex === -1) {
+            defaultIndex = 0;
         }
         
         select.selectedIndex = defaultIndex;
@@ -227,6 +244,13 @@ class TTSManager {
     }
 
     setDocument(doc) {
+        if (this.currentDoc === doc) {
+            // Already loaded this document, just update active highlight
+            this.highlightElement(this.currentIndex);
+            return;
+        }
+        
+        this.currentDoc = doc;
         const wasPlaying = this.isPlaying;
         
         this.stopSilence();
@@ -292,9 +316,37 @@ class TTSManager {
         
         this.currentIndex = index;
         this.updatePositionUI();
-        this.highlightElement(index);
         
         const el = this.textElements[index];
+        
+        // Check element horizontal visibility if in paginated mode
+        const contents = this.app.reader.rendition ? this.app.reader.rendition.getContents()[0] : null;
+        if (contents && this.app.reader.rendition.settings.flow === 'paginated') {
+            const rect = el.getBoundingClientRect();
+            const viewportWidth = contents.document.documentElement.clientWidth || window.innerWidth;
+            
+            // If the element is on the next page
+            if (rect.left >= viewportWidth - 5) {
+                this.app.reader.nextPage().then(() => {
+                    setTimeout(() => {
+                        this.speakParagraph(index);
+                    }, 100);
+                });
+                return;
+            }
+            // If the element is on the previous page (e.g. if the user skipped back)
+            else if (rect.right <= 5) {
+                this.app.reader.prevPage().then(() => {
+                    setTimeout(() => {
+                        this.speakParagraph(index);
+                    }, 100);
+                });
+                return;
+            }
+        }
+        
+        this.highlightElement(index);
+        
         const text = el.textContent.trim();
         
         this.currentUtterance = new SpeechSynthesisUtterance(text);
@@ -371,8 +423,11 @@ class TTSManager {
             const el = this.textElements[index];
             el.classList.add('tts-highlight');
             
-            // Smoothly center the active text in view inside iframe
-            el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            // Only scroll into view if NOT in paginated mode (horizontal flow)
+            const isPaginated = this.app.reader.rendition && this.app.reader.rendition.settings.flow === 'paginated';
+            if (!isPaginated) {
+                el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            }
         }
     }
 
@@ -470,12 +525,26 @@ class ReaderManager {
                         "body": {
                             "font-family": `${settings.fontFamily} !important`,
                             "line-height": "1.6 !important",
-                            "padding": "0 20px !important"
+                            "padding": "0 16px !important",
+                            "max-width": "100% !important",
+                            "overflow-x": "hidden !important",
+                            "box-sizing": "border-box !important"
+                        },
+                        "html": {
+                            "max-width": "100% !important",
+                            "overflow-x": "hidden !important",
+                            "box-sizing": "border-box !important"
                         },
                         "p": {
                             "margin-bottom": "1.2em !important",
                             "font-size": "inherit !important",
-                            "line-height": "1.6 !important"
+                            "line-height": "1.6 !important",
+                            "max-width": "100% !important",
+                            "word-wrap": "break-word !important"
+                        },
+                        "img": {
+                            "max-width": "100% !important",
+                            "height": "auto !important"
                         },
                         ".tts-highlight": {
                             "background-color": "rgba(99, 102, 241, 0.25) !important",
@@ -551,6 +620,7 @@ class ReaderManager {
 
     unloadBook() {
         this.app.tts.stopSilence();
+        this.app.tts.currentDoc = null; // Reset document reference
         if (this.rendition) {
             this.rendition.destroy();
             this.rendition = null;
