@@ -227,6 +227,8 @@ class TTSManager {
     }
 
     setDocument(doc) {
+        const wasPlaying = this.isPlaying;
+        
         this.stopSilence();
         this.clearHighlights();
         
@@ -256,9 +258,11 @@ class TTSManager {
             });
         });
         
-        // Handle autoplay if transitioning between chapters during continuous speech
-        if (this.autoPlayNextPage) {
+        // Handle autoplay if transitioning between chapters during continuous speech or manual page navigation
+        if (wasPlaying || this.autoPlayNextPage) {
             this.autoPlayNextPage = false;
+            this.isPlaying = true;
+            this.updatePlayerUI();
             setTimeout(() => {
                 this.speakParagraph(0);
             }, 300);
@@ -306,7 +310,9 @@ class TTSManager {
         };
         
         this.currentUtterance.onerror = (e) => {
-            console.warn("TTS Utterance boundary/error: ", e);
+            if (e.error !== 'interrupted') {
+                console.warn("TTS Utterance boundary/error: ", e);
+            }
             if (e.error !== 'interrupted' && this.isPlaying) {
                 this.speakParagraph(this.currentIndex + 1);
             }
@@ -439,11 +445,27 @@ class ReaderManager {
                     width: "100%",
                     height: "100%",
                     spread: "none",
-                    flow: "paginated"
+                    flow: "paginated",
+                    sandbox: ["allow-same-origin", "allow-scripts"]
                 });
                 
                 // Inject custom CSS styling inside the iframe
                 this.rendition.hooks.content.register((contents) => {
+                    // Tap margins to turn pages
+                    contents.document.addEventListener("click", (e) => {
+                        const width = contents.document.documentElement.clientWidth;
+                        const x = e.clientX;
+                        // Skip if user clicks an interactive element or paragraph with click-to-read pointer
+                        if (e.target.closest('a, button, input, select') || e.target.style.cursor === 'pointer') {
+                            return;
+                        }
+                        if (x < width * 0.18) {
+                            this.prevPage();
+                        } else if (x > width * 0.82) {
+                            this.nextPage();
+                        }
+                    });
+                    
                     contents.addStylesheetRules({
                         "body": {
                             "font-family": `${settings.fontFamily} !important`,
@@ -1121,4 +1143,13 @@ class EchoReadApp {
 window.addEventListener('DOMContentLoaded', () => {
     window.app = new EchoReadApp();
     window.app.init();
+    
+    // Register Service Worker for PWA offline capabilities
+    if ('serviceWorker' in navigator) {
+        window.addEventListener('load', () => {
+            navigator.serviceWorker.register('./sw.js')
+                .then(reg => console.log('Service Worker registered successfully with scope:', reg.scope))
+                .catch(err => console.error('Service Worker registration failed:', err));
+        });
+    }
 });
