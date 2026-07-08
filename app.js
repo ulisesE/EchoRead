@@ -506,6 +506,15 @@ class ReaderManager {
                 
                 // Inject custom CSS styling inside the iframe
                 this.rendition.hooks.content.register((contents) => {
+                    // Inject viewport meta tag to force correct layout scale on mobile
+                    let meta = contents.document.querySelector('meta[name="viewport"]');
+                    if (!meta) {
+                        meta = contents.document.createElement('meta');
+                        meta.setAttribute('name', 'viewport');
+                        meta.setAttribute('content', 'width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no');
+                        contents.document.head.appendChild(meta);
+                    }
+                    
                     // Tap margins to turn pages
                     contents.document.addEventListener("click", (e) => {
                         const width = contents.document.documentElement.clientWidth;
@@ -1165,15 +1174,18 @@ class UIManager {
             document.getElementById('library-view').classList.remove('active');
             document.getElementById('reader-view').classList.add('active');
             
-            this.app.reader.loadBook(book.file, book.id, book.progress).then(() => {
-                // Done loading
-                const spinner = viewer.querySelector('.reader-loading-spinner');
-                if (spinner) spinner.remove();
-            }).catch(err => {
-                console.error(err);
-                alert("Error al renderizar el libro. Volviendo a la biblioteca.");
-                this.closeReaderMode();
-            });
+            // Wait for browser layout to settle so epub.js measures width correctly
+            setTimeout(() => {
+                this.app.reader.loadBook(book.file, book.id, book.progress).then(() => {
+                    // Done loading
+                    const spinner = viewer.querySelector('.reader-loading-spinner');
+                    if (spinner) spinner.remove();
+                }).catch(err => {
+                    console.error(err);
+                    alert("Error al renderizar el libro. Volviendo a la biblioteca.");
+                    this.closeReaderMode();
+                });
+            }, 100);
         });
     }
 

@@ -833,6 +833,7 @@ body {
     position: relative;
     background-color: var(--reader-bg);
     overflow: hidden;
+    width: 100%;
 }
 
 #viewer-container {
