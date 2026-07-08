@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>EchoRead - Tu Lector de Libros con Voz</title>
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=Playfair+Display:ital,wght@0,400..900;1,400..900&display=swap" rel="stylesheet">
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <!-- Stylesheet -->
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body data-theme="dark">
+    <!-- App Container -->
+    <div id="app-container">
+        
+        <!-- ==================== VIEW: LIBRARY ==================== -->
+        <main id="library-view" class="app-view active">
+            <header class="app-header">
+                <div class="logo-container">
+                    <div class="logo-icon">
+                        <i data-lucide="volume-2" class="voice-wave-icon"></i>
+                        <i data-lucide="book-open" class="book-icon"></i>
+                    </div>
+                    <h1>EchoRead</h1>
+                </div>
+                <div class="header-controls">
+                    <div class="theme-selector">
+                        <button class="theme-btn" data-set-theme="light" title="Modo Claro"><i data-lucide="sun"></i></button>
+                        <button class="theme-btn" data-set-theme="sepia" title="Modo Sepia"><i data-lucide="coffee"></i></button>
+                        <button class="theme-btn active" data-set-theme="dark" title="Modo Oscuro"><i data-lucide="moon"></i></button>
+                    </div>
+                </div>
+            </header>
+
+            <section class="library-content">
+                <div class="welcome-banner">
+                    <h2>Tu biblioteca, privada y local</h2>
+                    <p>Los libros se guardan de forma segura directamente en tu navegador. Sin servidores, sin cuentas, totalmente privado.</p>
+                </div>
+
+                <!-- Dropzone / File Upload -->
+                <div id="drop-zone" class="drop-zone">
+                    <input type="file" id="file-input" accept=".epub" style="display: none;">
+                    <div class="drop-zone-content">
+                        <div class="upload-icon-wrapper">
+                            <i data-lucide="file-up"></i>
+                        </div>
+                        <h3>Agregar EPUB</h3>
+                        <p>Arrastra tu archivo aquí o <span class="browse-link">busca en tu dispositivo</span></p>
+                        <span class="file-format-badge">Soporta formato .epub</span>
+                    </div>
+                </div>
+
+                <div class="section-title-container">
+                    <i data-lucide="library"></i>
+                    <h2>Mis libros</h2>
+                </div>
+
+                <!-- Book Grid -->
+                <div id="book-grid" class="book-grid">
+                    <!-- Cards will be dynamically rendered here -->
+                    <div id="library-empty" class="library-empty">
+                        <i data-lucide="folder-open"></i>
+                        <p>No tienes libros agregados. ¡Sube un EPUB para empezar a leer!</p>
+                    </div>
+                </div>
+            </section>
+        </main>
+
+        <!-- ==================== VIEW: READER ==================== -->
+        <main id="reader-view" class="app-view">
+            <header class="reader-header">
+                <div class="reader-header-left">
+                    <button id="close-reader-btn" class="icon-btn tooltip" data-tooltip="Volver a la biblioteca">
+                        <i data-lucide="arrow-left"></i>
+                    </button>
+                    <div class="reader-title-info">
+                        <h2 id="reader-book-title">Título del Libro</h2>
+                        <span id="reader-chapter-title">Cargando capítulo...</span>
+                    </div>
+                </div>
+
+                <div class="reader-header-right">
+                    <!-- TOC Dropdown -->
+                    <div class="dropdown-container">
+                        <button id="toc-btn" class="icon-btn tooltip" data-tooltip="Índice">
+                            <i data-lucide="menu"></i>
+                        </button>
+                        <div id="toc-dropdown" class="dropdown-content">
+                            <h3>Índice</h3>
+                            <ul id="toc-list">
+                                <!-- Chapters dynamically populated -->
+                            </ul>
+                        </div>
+                    </div>
+
+                    <!-- Layout settings -->
+                    <div class="dropdown-container">
+                        <button id="settings-btn" class="icon-btn tooltip" data-tooltip="Ajustes de texto">
+                            <i data-lucide="type"></i>
+                        </button>
+                        <div id="settings-dropdown" class="dropdown-content settings-panel">
+                            <h3>Ajustes de Lectura</h3>
+                            
+                            <div class="settings-group">
+                                <label>Tema de fondo</label>
+                                <div class="theme-picker-row">
+                                    <button class="theme-picker-btn light" data-theme-val="light">Claro</button>
+                                    <button class="theme-picker-btn sepia" data-theme-val="sepia">Sepia</button>
+                                    <button class="theme-picker-btn dark" data-theme-val="dark">Oscuro</button>
+                                </div>
+                            </div>
+
+                            <div class="settings-group">
+                                <label>Tamaño de texto</label>
+                                <div class="font-size-row">
+                                    <button id="font-dec-btn" class="size-btn"><i data-lucide="minus"></i></button>
+                                    <span id="font-size-val">100%</span>
+                                    <button id="font-inc-btn" class="size-btn"><i data-lucide="plus"></i></button>
+                                </div>
+                            </div>
+
+                            <div class="settings-group">
+                                <label>Tipo de letra</label>
+                                <select id="font-family-select" class="custom-select">
+                                    <option value="system-ui">Sin Serif (Moderna)</option>
+                                    <option value="'Playfair Display', Georgia, serif">Con Serif (Libro)</option>
+                                    <option value="monospace">Monoespacio</option>
+                                </select>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </header>
+
+            <!-- Viewer Area -->
+            <div id="reader-workspace">
+                <button id="prev-page-btn" class="nav-arrow-btn left" aria-label="Página anterior">
+                    <i data-lucide="chevron-left"></i>
+                </button>
+
+                <div id="viewer-container">
+                    <div id="viewer"></div>
+                </div>
+
+                <button id="next-page-btn" class="nav-arrow-btn right" aria-label="Página siguiente">
+                    <i data-lucide="chevron-right"></i>
+                </button>
+            </div>
+
+            <!-- Bottom Control Panel: Text-to-Speech Player -->
+            <footer id="tts-player-panel" class="tts-player-panel">
+                <div class="tts-left">
+                    <div class="tts-indicator">
+                        <div class="tts-indicator-pulse"></div>
+                        <span id="tts-status-text">Lectura asistida por voz</span>
+                    </div>
+                    <span id="tts-position-text">Párrafo 0/0</span>
+                </div>
+
+                <div class="tts-center">
+                    <div class="player-controls">
+                        <button id="tts-prev-btn" class="player-btn tooltip" data-tooltip="Párrafo anterior">
+                            <i data-lucide="skip-back"></i>
+                        </button>
+                        <button id="tts-play-btn" class="player-btn play-main tooltip" data-tooltip="Reproducir / Pausar">
+                            <i data-lucide="play" id="tts-play-icon"></i>
+                        </button>
+                        <button id="tts-stop-btn" class="player-btn tooltip" data-tooltip="Detener">
+                            <i data-lucide="square"></i>
+                        </button>
+                        <button id="tts-next-btn" class="player-btn tooltip" data-tooltip="Siguiente párrafo">
+                            <i data-lucide="skip-forward"></i>
+                        </button>
+                    </div>
+                </div>
+
+                <div class="tts-right">
+                    <!-- Voice controls -->
+                    <div class="voice-settings-inline">
+                        <div class="voice-select-wrapper">
+                            <i data-lucide="languages" class="select-icon"></i>
+                            <select id="tts-voice-select" class="custom-select voice-select">
+                                <option value="">Cargando voces...</option>
+                            </select>
+                        </div>
+                        
+                        <div class="speed-control">
+                            <i data-lucide="gauge"></i>
+                            <span id="tts-speed-val">1.0x</span>
+                            <input type="range" id="tts-speed-slider" min="0.5" max="3" step="0.1" value="1.0" class="speed-slider">
+                        </div>
+                    </div>
+                </div>
+            </footer>
+        </main>
+    </div>
+
+    <!-- ==================== DEPENDENCIES ==================== -->
+    <!-- Load JSZip (Required for epub.js) -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+    <!-- Load epub.js -->
+    <script src="https://cdn.jsdelivr.net/npm/epubjs/dist/epub.min.js"></script>
+
+    <!-- App JavaScript -->
+    <script src="app.js"></script>
+</body>
+</html>
