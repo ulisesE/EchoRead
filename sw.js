@@ -1,4 +1,4 @@
-const CACHE_NAME = 'echoread-cache-v3';
+const CACHE_NAME = 'echoread-cache-v6';
 const ASSETS_TO_CACHE = [
   './',
   './index.html',

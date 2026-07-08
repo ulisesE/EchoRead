@@ -244,53 +244,85 @@ class TTSManager {
     }
 
     setDocument(doc) {
-        if (this.currentDoc === doc) {
-            // Already loaded this document, just update active highlight
-            this.highlightElement(this.currentIndex);
-            return;
-        }
-        
+        const isSameDoc = (this.currentDoc === doc);
         this.currentDoc = doc;
         const wasPlaying = this.isPlaying;
         
+        // Stop current speaking to prevent overlaps when relocating
         this.stopSilence();
         this.clearHighlights();
         
-        // Find all readable nodes inside the iframe doc
-        const selectors = 'p, h1, h2, h3, h4, h5, h6, li';
-        const rawElements = Array.from(doc.querySelectorAll(selectors));
-        
-        // Filter elements with non-empty text, excluding nav/header/footer content
-        this.textElements = rawElements.filter(el => {
-            const text = el.textContent.trim();
-            // Skip short metadata, SVGs, header/footers or empty items
-            if (text.length === 0) return false;
-            if (el.closest('header, footer, nav, noscript, svg')) return false;
-            return true;
-        });
-        
-        // Reset index
-        this.currentIndex = 0;
-        this.updatePositionUI();
-        
-        // Add click events to text elements for direct playback targeting
-        this.textElements.forEach((el, index) => {
-            el.style.cursor = 'pointer';
-            el.addEventListener('click', (e) => {
-                e.stopPropagation();
-                this.speakParagraph(index);
+        if (!isSameDoc) {
+            // Find all readable nodes inside the iframe doc
+            const selectors = 'p, h1, h2, h3, h4, h5, h6, li';
+            const rawElements = Array.from(doc.querySelectorAll(selectors));
+            
+            // Filter elements with non-empty text, excluding nav/header/footer content
+            this.textElements = rawElements.filter(el => {
+                const text = el.textContent.trim();
+                // Skip short metadata, SVGs, header/footers or empty items
+                if (text.length === 0) return false;
+                if (el.closest('header, footer, nav, noscript, svg')) return false;
+                return true;
             });
-        });
-        
-        // Handle autoplay if transitioning between chapters during continuous speech or manual page navigation
-        if (wasPlaying || this.autoPlayNextPage) {
-            this.autoPlayNextPage = false;
-            this.isPlaying = true;
-            this.updatePlayerUI();
-            setTimeout(() => {
-                this.speakParagraph(0);
-            }, 300);
+            
+            // Add click events to text elements for direct playback targeting
+            this.textElements.forEach((el, index) => {
+                el.style.cursor = 'pointer';
+                el.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    this.speakParagraph(index);
+                });
+            });
         }
+        
+        // Find the index of the first visible paragraph on the current page view
+        // Wait 150ms for epub.js layout to settle before measuring bounding boxes
+        setTimeout(() => {
+            const firstVisibleIndex = this.findFirstVisibleParagraph();
+            this.currentIndex = firstVisibleIndex;
+            this.updatePositionUI();
+            
+            // If it was playing, resume speaking from the first visible paragraph
+            if (wasPlaying || this.autoPlayNextPage) {
+                this.autoPlayNextPage = false;
+                this.isPlaying = true;
+                this.updatePlayerUI();
+                this.speakParagraph(this.currentIndex);
+            } else {
+                this.highlightElement(this.currentIndex);
+            }
+        }, 150);
+    }
+
+    findFirstVisibleParagraph() {
+        if (this.textElements.length === 0) return 0;
+        
+        const contents = this.app.reader.rendition ? this.app.reader.rendition.getContents()[0] : null;
+        if (!contents) return 0;
+        
+        const viewportWidth = contents.document.documentElement.clientWidth || window.innerWidth;
+        
+        // In paginated flow, find the first element whose left bound is inside the viewport
+        if (this.app.reader.rendition.settings.flow === 'paginated') {
+            for (let i = 0; i < this.textElements.length; i++) {
+                const rect = this.textElements[i].getBoundingClientRect();
+                // Allow a small margin of error (e.g. 5px)
+                if (rect.left >= -5 && rect.left < viewportWidth - 5) {
+                    return i;
+                }
+            }
+        } else {
+            // In scrolled flow, find the first element that is within the viewport height
+            const viewportHeight = contents.document.documentElement.clientHeight || window.innerHeight;
+            for (let i = 0; i < this.textElements.length; i++) {
+                const rect = this.textElements[i].getBoundingClientRect();
+                if (rect.top >= -5 && rect.top < viewportHeight - 5) {
+                    return i;
+                }
+            }
+        }
+        return 0;
     }
 
     speakParagraph(index) {
@@ -329,22 +361,15 @@ class TTSManager {
             const rect = el.getBoundingClientRect();
             const viewportWidth = contents.document.documentElement.clientWidth || window.innerWidth;
             
-            // If the element is on the next page
+            // If the element is on the next page, just flip the page.
+            // The relocated event will trigger setDocument which automatically starts reading the new page top paragraph!
             if (rect.left >= viewportWidth - 5) {
-                this.app.reader.nextPage().then(() => {
-                    setTimeout(() => {
-                        this.speakParagraph(index);
-                    }, 100);
-                });
+                this.app.reader.nextPage();
                 return;
             }
-            // If the element is on the previous page (e.g. if the user skipped back)
+            // If the element is on the previous page
             else if (rect.right <= 5) {
-                this.app.reader.prevPage().then(() => {
-                    setTimeout(() => {
-                        this.speakParagraph(index);
-                    }, 100);
-                });
+                this.app.reader.prevPage();
                 return;
             }
         }
@@ -550,21 +575,13 @@ class ReaderManager {
                         "body": {
                             "font-family": `${settings.fontFamily} !important`,
                             "line-height": "1.6 !important",
-                            "padding": "0 16px !important",
-                            "max-width": "100% !important",
-                            "overflow-x": "hidden !important",
-                            "box-sizing": "border-box !important"
-                        },
-                        "html": {
-                            "max-width": "100% !important",
-                            "overflow-x": "hidden !important",
+                            "padding": "0 24px !important",
                             "box-sizing": "border-box !important"
                         },
                         "p": {
                             "margin-bottom": "1.2em !important",
                             "font-size": "inherit !important",
                             "line-height": "1.6 !important",
-                            "max-width": "100% !important",
                             "word-wrap": "break-word !important"
                         },
                         "img": {
