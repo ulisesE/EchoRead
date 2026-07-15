@@ -132,6 +132,8 @@ class TTSManager {
         this.speed = 1.0;
         
         this.textElements = [];
+        this.pageItems = [];
+        this.pageItemIndex = 0;
         this.currentIndex = -1;
         this.currentUtterance = null;
         this.isPlaying = false;
@@ -142,6 +144,7 @@ class TTSManager {
         this.skipVisibilityCheck = false;
         this.currentPageIndex = 0;
         this.isUpdatingLocationFromTTS = false;
+        this.isTurningPageForTTS = false;
         
         // Setup voices
         if (this.synth) {
@@ -225,9 +228,9 @@ class TTSManager {
             settings.voiceName = this.selectedVoice.name;
             this.app.storage.saveSettings(settings);
             
-            // If currently speaking, restart current paragraph with new voice
+            // If currently speaking, restart current page item with new voice
             if (this.isPlaying) {
-                this.speakParagraph(this.currentIndex);
+                this.speakPageItem(this.pageItemIndex);
             }
         };
     }
@@ -243,7 +246,7 @@ class TTSManager {
         
         // Restart speech if active to apply speed immediately
         if (this.isPlaying) {
-            this.speakParagraph(this.currentIndex);
+            this.speakPageItem(this.pageItemIndex);
         }
     }
 
@@ -279,7 +282,7 @@ class TTSManager {
                 el.style.cursor = 'pointer';
                 el.addEventListener('click', (e) => {
                     e.stopPropagation();
-                    this.speakParagraph(index);
+                    this.startFromElement(index);
                 });
                 
                 if (section) {
@@ -295,32 +298,21 @@ class TTSManager {
             });
         }
         
-        // If we are updating location internally from TTS, skip rebuilding state to prevent loops
-        if (this.isUpdatingLocationFromTTS) {
-            this.isUpdatingLocationFromTTS = false;
-            return;
-        }
-        
         // Find the index of the first visible paragraph on the current page view
         // Wait 150ms for epub.js layout to settle before measuring
         setTimeout(() => {
-            this.currentPageIndex = this.getCurrentReaderPageIndex();
-            this.currentIndex = this.findFirstParagraphOnPage(this.currentPageIndex);
+            this.syncPageItems();
             this.updatePositionUI();
             
-            // If it was playing, resume speaking from the first visible paragraph
+            // If it was playing, resume speaking from the first visible page item
             if (wasPlaying || this.autoPlayNextPage) {
                 this.autoPlayNextPage = false;
+                this.isTurningPageForTTS = false;
                 this.isPlaying = true;
                 this.updatePlayerUI();
-                
-                // If it is a new chapter, skip the first visibility check to prevent jumping back
-                if (!isSameDoc) {
-                    this.skipVisibilityCheck = true;
-                }
-                this.speakParagraph(this.currentIndex);
+                this.speakPageItem(0);
             } else {
-                this.highlightElement(this.currentIndex);
+                this.highlightCurrentPageItem();
             }
         }, 150);
     }
@@ -398,6 +390,11 @@ class TTSManager {
     }
 
     findFirstParagraphOnPage(pageIndex) {
+        const firstVisible = this.findFirstVisibleParagraph();
+        if (firstVisible !== -1) {
+            return firstVisible;
+        }
+
         let firstAhead = -1;
         let closestIndex = 0;
         let closestDistance = Number.POSITIVE_INFINITY;
@@ -423,11 +420,227 @@ class TTSManager {
         return firstAhead !== -1 ? firstAhead : closestIndex;
     }
 
+    isPaginatedMode() {
+        return this.app.reader.rendition && this.app.reader.rendition.settings.flow === 'paginated';
+    }
+
+    isElementVisibleInReader(el) {
+        if (!el) return false;
+        const contents = this.app.reader.rendition ? this.app.reader.rendition.getContents()[0] : null;
+        if (!contents) return false;
+
+        const doc = contents.document;
+        const viewportWidth = doc.documentElement.clientWidth || contents.window.innerWidth || window.innerWidth || 360;
+        const viewportHeight = doc.documentElement.clientHeight || contents.window.innerHeight || window.innerHeight || 600;
+        const horizontalPadding = Math.max(24, viewportWidth * 0.08);
+        const rects = Array.from(el.getClientRects());
+
+        return rects.some(rect => (
+            rect.width > 0 &&
+            rect.height > 0 &&
+            rect.right > horizontalPadding &&
+            rect.left < viewportWidth - horizontalPadding &&
+            rect.bottom > 0 &&
+            rect.top < viewportHeight
+        ));
+    }
+
+    getVisibleRects(el) {
+        if (!el) return [];
+        const contents = this.app.reader.rendition ? this.app.reader.rendition.getContents()[0] : null;
+        if (!contents) return [];
+
+        const doc = contents.document;
+        const viewportWidth = doc.documentElement.clientWidth || contents.window.innerWidth || window.innerWidth || 360;
+        const viewportHeight = doc.documentElement.clientHeight || contents.window.innerHeight || window.innerHeight || 600;
+        const horizontalPadding = Math.max(24, viewportWidth * 0.08);
+
+        return Array.from(el.getClientRects()).filter(rect => (
+            rect.width > 0 &&
+            rect.height > 0 &&
+            rect.right > horizontalPadding &&
+            rect.left < viewportWidth - horizontalPadding &&
+            rect.bottom > 0 &&
+            rect.top < viewportHeight
+        ));
+    }
+
+    getPointRange(doc, x, y) {
+        if (doc.caretPositionFromPoint) {
+            const position = doc.caretPositionFromPoint(x, y);
+            if (!position || !position.offsetNode) return null;
+            return {
+                node: position.offsetNode,
+                offset: position.offset
+            };
+        }
+
+        if (doc.caretRangeFromPoint) {
+            const range = doc.caretRangeFromPoint(x, y);
+            if (!range) return null;
+            return {
+                node: range.startContainer,
+                offset: range.startOffset
+            };
+        }
+
+        return null;
+    }
+
+    isPointInsideElement(point, el) {
+        return point && point.node && (point.node === el || el.contains(point.node));
+    }
+
+    getVisibleTextForElement(el) {
+        const fallback = el.textContent.trim().replace(/\s+/g, ' ');
+        if (!this.isPaginatedMode()) return fallback;
+
+        const contents = this.app.reader.rendition ? this.app.reader.rendition.getContents()[0] : null;
+        const rects = this.getVisibleRects(el);
+        if (!contents || rects.length === 0) return fallback;
+
+        const doc = contents.document;
+        const viewportWidth = doc.documentElement.clientWidth || contents.window.innerWidth || window.innerWidth || 360;
+        const viewportHeight = doc.documentElement.clientHeight || contents.window.innerHeight || window.innerHeight || 600;
+        const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
+        const first = rects[0];
+        const last = rects[rects.length - 1];
+        const start = this.getPointRange(
+            doc,
+            clamp(first.left + 1, 1, viewportWidth - 2),
+            clamp(first.top + Math.min(4, first.height / 2), 1, viewportHeight - 2)
+        );
+        const end = this.getPointRange(
+            doc,
+            clamp(last.right - 1, 1, viewportWidth - 2),
+            clamp(last.bottom - Math.min(4, last.height / 2), 1, viewportHeight - 2)
+        );
+
+        if (!this.isPointInsideElement(start, el) || !this.isPointInsideElement(end, el)) {
+            return fallback;
+        }
+
+        try {
+            const range = doc.createRange();
+            range.setStart(start.node, start.offset);
+            range.setEnd(end.node, end.offset);
+
+            if (range.collapsed) {
+                const swappedRange = doc.createRange();
+                swappedRange.setStart(end.node, end.offset);
+                swappedRange.setEnd(start.node, start.offset);
+
+                if (!swappedRange.collapsed) {
+                    const swappedText = swappedRange.toString().trim().replace(/\s+/g, ' ');
+                    if (swappedText) return swappedText;
+                }
+
+                return fallback;
+            }
+
+            const visibleText = range.toString().trim().replace(/\s+/g, ' ');
+            return visibleText || fallback;
+        } catch (err) {
+            console.warn("Failed to extract visible text range", err);
+            return fallback;
+        }
+    }
+
+    getCurrentPageItems() {
+        const items = [];
+
+        this.textElements.forEach((el, index) => {
+            if (!this.isElementVisibleInReader(el)) return;
+
+            const text = this.getVisibleTextForElement(el);
+            if (!text) return;
+
+            items.push({ el, text, sourceIndex: index });
+        });
+
+        return items;
+    }
+
+    syncPageItems(preferredSourceIndex = null) {
+        this.currentPageIndex = this.getCurrentReaderPageIndex();
+        this.pageItems = this.getCurrentPageItems();
+
+        if (this.pageItems.length === 0 && this.textElements.length > 0) {
+            const fallbackIndex = this.findFirstParagraphOnPage(this.currentPageIndex);
+            const fallbackElement = this.textElements[fallbackIndex];
+            if (fallbackElement) {
+                this.pageItems = [{
+                    el: fallbackElement,
+                    text: fallbackElement.textContent.trim().replace(/\s+/g, ' '),
+                    sourceIndex: fallbackIndex
+                }];
+            }
+        }
+
+        this.pageItemIndex = 0;
+
+        if (preferredSourceIndex !== null) {
+            const preferredIndex = this.pageItems.findIndex(item => item.sourceIndex >= preferredSourceIndex);
+            if (preferredIndex !== -1) {
+                this.pageItemIndex = preferredIndex;
+            }
+        }
+
+        const item = this.pageItems[this.pageItemIndex];
+        this.currentIndex = item ? item.sourceIndex : -1;
+    }
+
+    findFirstVisibleParagraph() {
+        if (!this.isPaginatedMode()) return -1;
+
+        for (let i = 0; i < this.textElements.length; i++) {
+            if (this.isElementVisibleInReader(this.textElements[i])) {
+                return i;
+            }
+        }
+
+        return -1;
+    }
+
+    turnPageForTTS(direction) {
+        if (this.isTurningPageForTTS) return;
+        this.isTurningPageForTTS = true;
+        this.autoPlayNextPage = true;
+        this.clearHighlights();
+
+        const turn = direction === 'prev' ? this.app.reader.prevPage() : this.app.reader.nextPage();
+        turn.then(navigated => {
+            if (!navigated) {
+                this.isTurningPageForTTS = false;
+                this.autoPlayNextPage = false;
+                this.stop();
+                if (direction !== 'prev') {
+                    alert("Has llegado al final del libro.");
+                }
+                return;
+            }
+
+            setTimeout(() => {
+                if (!this.isTurningPageForTTS || !this.isPlaying) return;
+
+                const contents = this.app.reader.rendition ? this.app.reader.rendition.getContents()[0] : null;
+                if (contents && contents.document) {
+                    this.setDocument(contents.document);
+                }
+            }, 180);
+        }).catch(() => {
+            this.isTurningPageForTTS = false;
+            this.autoPlayNextPage = false;
+        });
+    }
+
     speakParagraph(index, useFallbackVoice = false) {
+        this.syncPageItems(index);
+        this.speakPageItem(this.pageItemIndex, useFallbackVoice);
+    }
+
+    speakPageItem(index, useFallbackVoice = false) {
         if (!this.synth) return;
-        
-        const skipVis = this.skipVisibilityCheck;
-        this.skipVisibilityCheck = false; // Reset immediately
         
         if (this.currentUtterance) {
             this.currentUtterance.onend = null;
@@ -437,49 +650,29 @@ class TTSManager {
         
         if (index < 0) index = 0;
         
-        // If we reached the end of the current section
-        if (index >= this.textElements.length) {
-            this.clearHighlights();
-            this.autoPlayNextPage = true;
-            this.app.reader.nextPage().then(navigated => {
-                if (!navigated) {
-                    // No next chapter, stop
-                    this.stop();
-                    this.autoPlayNextPage = false;
-                    alert("Has llegado al final del libro.");
-                }
-            });
+        if (this.pageItems.length === 0) {
+            this.syncPageItems();
+        }
+
+        if (index >= this.pageItems.length) {
+            this.turnPageForTTS('next');
             return;
         }
         
-        this.currentIndex = index;
+        this.pageItemIndex = index;
+        const item = this.pageItems[this.pageItemIndex];
+        this.currentIndex = item.sourceIndex;
         this.updatePositionUI();
-        
-        const el = this.textElements[index];
-        
-        // Check page transitions if in paginated mode
-        if (!skipVis && el.cfi && this.app.reader.rendition && this.app.reader.rendition.settings.flow === 'paginated') {
-            const targetPageIndex = this.getParagraphPageIndex(el);
-            
-            // If the element is on a different page, use CFI navigation to turn page
-            if (targetPageIndex !== this.currentPageIndex) {
-                this.currentPageIndex = targetPageIndex;
-                this.isUpdatingLocationFromTTS = true;
-                
-                this.app.reader.rendition.display(el.cfi).then(() => {
-                    if (this.isPlaying) {
-                        this.speakParagraph(index, useFallbackVoice);
-                    }
-                });
-                return;
-            }
+
+        if (this.isPaginatedMode() && !this.isElementVisibleInReader(item.el)) {
+            const direction = this.pageItemIndex < index ? 'prev' : 'next';
+            this.turnPageForTTS(direction);
+            return;
         }
         
-        this.highlightElement(index);
+        this.highlightCurrentPageItem();
         
-        const text = el.textContent.trim();
-        
-        this.currentUtterance = new SpeechSynthesisUtterance(text);
+        this.currentUtterance = new SpeechSynthesisUtterance(item.text);
         
         // Determine voice to use: fallback to a local Spanish voice (or system default) if cloud voice failed
         let voiceToUse = this.selectedVoice;
@@ -496,7 +689,7 @@ class TTSManager {
         
         this.currentUtterance.onend = () => {
             if (this.isPlaying) {
-                this.speakParagraph(this.currentIndex + 1, useFallbackVoice);
+                this.speakPageItem(this.pageItemIndex + 1, useFallbackVoice);
             }
         };
         
@@ -506,11 +699,11 @@ class TTSManager {
             }
             if (e.error === 'synthesis-failed' && !useFallbackVoice && this.selectedVoice) {
                 console.warn("TTS cloud voice failed. Retrying with local Spanish fallback voice...");
-                this.speakParagraph(this.currentIndex, true); // Retry current paragraph with fallback
+                this.speakPageItem(this.pageItemIndex, true);
                 return;
             }
             if (e.error !== 'interrupted' && this.isPlaying) {
-                this.speakParagraph(this.currentIndex + 1, useFallbackVoice);
+                this.speakPageItem(this.pageItemIndex + 1, useFallbackVoice);
             }
         };
         
@@ -534,7 +727,8 @@ class TTSManager {
         } else {
             // Play
             this.isPlaying = true;
-            this.speakParagraph(this.currentIndex !== -1 ? this.currentIndex : 0);
+            this.syncPageItems(this.currentIndex !== -1 ? this.currentIndex : null);
+            this.speakPageItem(this.pageItemIndex);
         }
     }
 
@@ -550,6 +744,8 @@ class TTSManager {
         this.synth.cancel();
         this.clearHighlights();
         this.currentIndex = 0;
+        this.pageItems = [];
+        this.pageItemIndex = 0;
         this.updatePositionUI();
         this.updatePlayerUI();
     }
@@ -566,12 +762,30 @@ class TTSManager {
 
     next() {
         if (this.textElements.length === 0) return;
-        this.speakParagraph(this.currentIndex + 1);
+        if (this.pageItems.length === 0) {
+            this.syncPageItems();
+        }
+        this.speakPageItem(this.pageItemIndex + 1);
     }
 
     prev() {
         if (this.textElements.length === 0) return;
-        this.speakParagraph(this.currentIndex - 1);
+        if (this.pageItems.length === 0) {
+            this.syncPageItems();
+        }
+
+        if (this.pageItemIndex > 0) {
+            this.speakPageItem(this.pageItemIndex - 1);
+            return;
+        }
+
+        this.turnPageForTTS('prev');
+    }
+
+    startFromElement(sourceIndex) {
+        this.syncPageItems(sourceIndex);
+        this.isPlaying = true;
+        this.speakPageItem(this.pageItemIndex);
     }
 
     highlightElement(index) {
@@ -588,6 +802,13 @@ class TTSManager {
         }
     }
 
+    highlightCurrentPageItem() {
+        this.clearHighlights();
+        const item = this.pageItems[this.pageItemIndex];
+        if (!item) return;
+        item.el.classList.add('tts-highlight');
+    }
+
     clearHighlights() {
         this.textElements.forEach(el => {
             el.classList.remove('tts-highlight');
@@ -595,9 +816,9 @@ class TTSManager {
     }
 
     updatePositionUI() {
-        const total = this.textElements.length;
-        const current = total > 0 ? this.currentIndex + 1 : 0;
-        document.getElementById('tts-position-text').textContent = `Párrafo ${current}/${total}`;
+        const total = this.pageItems.length;
+        const current = total > 0 ? this.pageItemIndex + 1 : 0;
+        document.getElementById('tts-position-text').textContent = `Página ${this.currentPageIndex + 1} · Bloque ${current}/${total}`;
     }
 
     updatePlayerUI() {

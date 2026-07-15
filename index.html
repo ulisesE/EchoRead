@@ -34,7 +34,7 @@
                         </div>
                         <h1>EchoRead</h1>
                     </div>
-                    <span class="app-version">v1.0.14</span>
+                    <span class="app-version">v2.1.0 UI</span>
                 </div>
                 <div class="header-controls">
                     <div class="theme-selector">
@@ -47,8 +47,8 @@
 
             <section class="library-content">
                 <div class="welcome-banner">
-                    <h2>Tu biblioteca, privada y local</h2>
-                    <p>Los libros se guardan de forma segura directamente en tu navegador. Sin servidores, sin cuentas, totalmente privado.</p>
+                    <h2>Biblioteca local</h2>
+                    <p>Importa EPUBs, conserva tu progreso en este dispositivo y escucha la página actual sin cuentas ni sincronización externa.</p>
                 </div>
 
                 <!-- Dropzone / File Upload -->
@@ -58,8 +58,8 @@
                         <div class="upload-icon-wrapper">
                             <i data-lucide="file-up"></i>
                         </div>
-                        <h3>Agregar EPUB</h3>
-                        <p>Arrastra tu archivo aquí o <span class="browse-link">busca en tu dispositivo</span></p>
+                        <h3>Importar libro</h3>
+                        <p>Arrastra un EPUB o <span class="browse-link">selecciona un archivo</span></p>
                         <span class="file-format-badge">Soporta formato .epub</span>
                     </div>
                 </div>
@@ -168,12 +168,12 @@
                         <div class="tts-indicator-pulse"></div>
                         <span id="tts-status-text">Lectura asistida por voz</span>
                     </div>
-                    <span id="tts-position-text">Párrafo 0/0</span>
+                    <span id="tts-position-text">Página 1 · Bloque 0/0</span>
                 </div>
 
                 <div class="tts-center">
                     <div class="player-controls">
-                        <button id="tts-prev-btn" class="player-btn tooltip" data-tooltip="Párrafo anterior">
+                        <button id="tts-prev-btn" class="player-btn tooltip" data-tooltip="Bloque anterior">
                             <i data-lucide="skip-back"></i>
                         </button>
                         <button id="tts-play-btn" class="player-btn play-main tooltip" data-tooltip="Reproducir / Pausar">
@@ -182,7 +182,7 @@
                         <button id="tts-stop-btn" class="player-btn tooltip" data-tooltip="Detener">
                             <i data-lucide="square"></i>
                         </button>
-                        <button id="tts-next-btn" class="player-btn tooltip" data-tooltip="Siguiente párrafo">
+                        <button id="tts-next-btn" class="player-btn tooltip" data-tooltip="Siguiente bloque">
                             <i data-lucide="skip-forward"></i>
                         </button>
                     </div>

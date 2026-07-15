@@ -1,4 +1,4 @@
-const VERSION = '1.0.14';
+const VERSION = '2.1.0';
 const CACHE_NAME = `echoread-cache-v${VERSION}`;
 
 // Only local assets to guarantee offline load without depending on external CDNs at installation time
@@ -71,13 +71,29 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
-  // 2. CSS / Styles, JS / Scripts -> Stale-While-Revalidate
-  // Also include CDNs which serve script or style resources
+  // 2. CSS / Styles, JS / Scripts
+  // Local app assets are Network First so fixes are visible immediately.
+  // CDNs use Stale-While-Revalidate for resilience.
   const isCdnAsset = url.hostname.includes('cdnjs.cloudflare.com') || 
                      url.hostname.includes('cdn.jsdelivr.net') || 
                      url.hostname.includes('unpkg.com');
-                     
-  if (destination === 'script' || destination === 'style' || isCdnAsset) {
+
+  if ((destination === 'script' || destination === 'style') && !isCdnAsset) {
+    event.respondWith(
+      fetch(event.request)
+        .then((networkResponse) => {
+          if (networkResponse.status === 200) {
+            const responseToCache = networkResponse.clone();
+            caches.open(CACHE_NAME).then((cache) => cache.put(event.request, responseToCache));
+          }
+          return networkResponse;
+        })
+        .catch(() => caches.match(event.request))
+    );
+    return;
+  }
+
+  if (isCdnAsset) {
     event.respondWith(
       caches.match(event.request).then((cachedResponse) => {
         const fetchPromise = fetch(event.request)
