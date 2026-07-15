@@ -4,216 +4,258 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>EchoRead - Tu Lector de Libros con Voz</title>
+    
     <!-- Favicon & PWA Manifest -->
     <link rel="icon" type="image/svg+xml" href="icon.svg">
     <link rel="manifest" href="manifest.json">
-    <meta name="theme-color" content="#080c14">
+    <meta name="theme-color" content="#0d1117">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    
+    <!-- Bootstrap 5 CSS -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    
     <!-- Google Fonts -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=Playfair+Display:ital,wght@0,400..900;1,400..900&display=swap" rel="stylesheet">
+    
     <!-- Lucide Icons -->
     <script src="https://unpkg.com/lucide@latest"></script>
-    <!-- Stylesheet -->
+    
+    <!-- Custom CSS Stylesheet -->
     <link rel="stylesheet" href="styles.css">
 </head>
 <body data-theme="dark">
     <!-- App Container -->
-    <div id="app-container">
+    <div id="app-container" class="d-flex flex-column min-vh-100">
         
-        <!-- ==================== VIEW: LIBRARY ==================== -->
-        <main id="library-view" class="app-view active">
-            <header class="app-header">
-                <div class="logo-group">
-                    <div class="logo-container">
-                        <div class="logo-icon">
-                            <i data-lucide="volume-2" class="voice-wave-icon"></i>
-                            <i data-lucide="book-open" class="book-icon"></i>
-                        </div>
-                        <h1>EchoRead</h1>
-                    </div>
-                    <span class="app-version">v2.1.0 UI</span>
-                </div>
-                <div class="header-controls">
-                    <div class="theme-selector">
-                        <button class="theme-btn" data-set-theme="light" title="Modo Claro"><i data-lucide="sun"></i></button>
-                        <button class="theme-btn" data-set-theme="sepia" title="Modo Sepia"><i data-lucide="coffee"></i></button>
-                        <button class="theme-btn active" data-set-theme="dark" title="Modo Oscuro"><i data-lucide="moon"></i></button>
-                    </div>
-                </div>
-            </header>
-
-            <section class="library-content">
-                <div class="welcome-banner">
-                    <h2>Biblioteca local</h2>
-                    <p>Importa EPUBs, conserva tu progreso en este dispositivo y escucha la página actual sin cuentas ni sincronización externa.</p>
-                </div>
-
-                <!-- Dropzone / File Upload -->
-                <div id="drop-zone" class="drop-zone">
-                    <input type="file" id="file-input" accept=".epub" style="display: none;">
-                    <div class="drop-zone-content">
-                        <div class="upload-icon-wrapper">
-                            <i data-lucide="file-up"></i>
-                        </div>
-                        <h3>Importar libro</h3>
-                        <p>Arrastra un EPUB o <span class="browse-link">selecciona un archivo</span></p>
-                        <span class="file-format-badge">Soporta formato .epub</span>
-                    </div>
-                </div>
-
-                <div class="section-title-container">
-                    <i data-lucide="library"></i>
-                    <h2>Mis libros</h2>
-                </div>
-
-                <!-- Book Grid -->
-                <div id="book-grid" class="book-grid">
-                    <!-- Cards will be dynamically rendered here -->
-                    <div id="library-empty" class="library-empty">
-                        <i data-lucide="folder-open"></i>
-                        <p>No tienes libros agregados. ¡Sube un EPUB para empezar a leer!</p>
-                    </div>
-                </div>
-            </section>
-        </main>
-
-        <!-- ==================== VIEW: READER ==================== -->
-        <main id="reader-view" class="app-view">
-            <header class="reader-header">
-                <div class="reader-header-left">
-                    <button id="close-reader-btn" class="icon-btn tooltip" data-tooltip="Volver a la biblioteca">
+        <!-- ==================== HEADER (NAVBAR) ==================== -->
+        <header class="app-header navbar navbar-expand-lg py-2 px-3 sticky-top">
+            <div class="container-fluid d-flex justify-content-between align-items-center">
+                <!-- Header Left: Logo / Back Button -->
+                <div class="d-flex align-items-center gap-2">
+                    <button id="close-reader-btn" class="btn btn-outline-secondary d-none me-2 shadow-sm" title="Volver a la biblioteca">
                         <i data-lucide="arrow-left"></i>
                     </button>
-                    <div class="reader-title-info">
-                        <h2 id="reader-book-title">Título del Libro</h2>
-                        <span id="reader-chapter-title">Cargando capítulo...</span>
+                    <div class="logo-group d-flex align-items-center gap-2">
+                        <div class="logo-icon-wrapper d-flex align-items-center justify-content-center">
+                            <i data-lucide="volume-2" class="voice-icon text-primary position-absolute"></i>
+                            <i data-lucide="book-open" class="book-icon text-light"></i>
+                        </div>
+                        <span class="logo-text h4 mb-0 fw-bold">EchoRead</span>
+                        <span class="badge bg-primary bg-opacity-25 text-primary ms-1 px-2 py-1 fs-6">v3.0 Vertical</span>
                     </div>
                 </div>
 
-                <div class="reader-header-right">
-                    <!-- TOC Dropdown -->
-                    <div class="dropdown-container">
-                        <button id="toc-btn" class="icon-btn tooltip" data-tooltip="Índice">
-                            <i data-lucide="menu"></i>
-                        </button>
-                        <div id="toc-dropdown" class="dropdown-content">
-                            <h3>Índice</h3>
-                            <ul id="toc-list">
-                                <!-- Chapters dynamically populated -->
-                            </ul>
-                        </div>
-                    </div>
+                <!-- Header Center (Visible only inside reader): Book & Chapter Title -->
+                <div id="reader-title-info" class="reader-title-info text-center d-none mx-auto max-width-md">
+                    <h5 id="reader-book-title" class="mb-0 text-truncate fw-bold">Título del Libro</h5>
+                    <small id="reader-chapter-title" class="text-muted text-truncate d-block">Cargando capítulo...</small>
+                </div>
 
-                    <!-- Layout settings -->
-                    <div class="dropdown-container">
-                        <button id="settings-btn" class="icon-btn tooltip" data-tooltip="Ajustes de texto">
+                <!-- Header Right: TOC (inside reader) & Theme Selectors -->
+                <div class="d-flex align-items-center gap-2">
+                    <!-- TOC button (hidden by default, shown in reader) -->
+                    <button id="toc-btn" class="btn btn-outline-secondary d-none shadow-sm me-1" type="button" data-bs-toggle="offcanvas" data-bs-target="#tocOffcanvas" aria-controls="tocOffcanvas" title="Índice">
+                        <i data-lucide="menu"></i> <span class="d-none d-sm-inline ms-1">Índice</span>
+                    </button>
+                    
+                    <!-- Font Adjustments Button (hidden by default, shown in reader) -->
+                    <div id="text-settings-dropdown-wrapper" class="dropdown d-none me-1">
+                        <button class="btn btn-outline-secondary dropdown-toggle shadow-sm" type="button" id="textSettingsBtn" data-bs-toggle="dropdown" aria-expanded="false" title="Ajustes de texto">
                             <i data-lucide="type"></i>
                         </button>
-                        <div id="settings-dropdown" class="dropdown-content settings-panel">
-                            <h3>Ajustes de Lectura</h3>
+                        <div class="dropdown-menu dropdown-menu-end p-3 settings-dropdown shadow-lg" aria-labelledby="textSettingsBtn">
+                            <h6 class="dropdown-header px-0 fw-bold border-bottom pb-2 mb-3 text-primary">Ajustes de Texto</h6>
                             
-                            <div class="settings-group">
-                                <label>Tema de fondo</label>
-                                <div class="theme-picker-row">
-                                    <button class="theme-picker-btn light" data-theme-val="light">Claro</button>
-                                    <button class="theme-picker-btn sepia" data-theme-val="sepia">Sepia</button>
-                                    <button class="theme-picker-btn dark" data-theme-val="dark">Oscuro</button>
-                                </div>
-                            </div>
-
-                            <div class="settings-group">
-                                <label>Tamaño de texto</label>
-                                <div class="font-size-row">
-                                    <button id="font-dec-btn" class="size-btn"><i data-lucide="minus"></i></button>
-                                    <span id="font-size-val">100%</span>
-                                    <button id="font-inc-btn" class="size-btn"><i data-lucide="plus"></i></button>
-                                </div>
-                            </div>
-
-                            <div class="settings-group">
-                                <label>Tipo de letra</label>
-                                <select id="font-family-select" class="custom-select">
+                            <!-- Font Family -->
+                            <div class="mb-3">
+                                <label for="font-family-select" class="form-label small fw-semibold text-muted">Tipo de letra</label>
+                                <select id="font-family-select" class="form-select form-select-sm">
                                     <option value="system-ui">Sin Serif (Moderna)</option>
                                     <option value="'Playfair Display', Georgia, serif">Con Serif (Libro)</option>
                                     <option value="monospace">Monoespacio</option>
                                 </select>
                             </div>
+                            
+                            <!-- Font Size -->
+                            <div>
+                                <label class="form-label small fw-semibold text-muted d-block">Tamaño de letra</label>
+                                <div class="d-flex align-items-center justify-content-between border rounded p-1 bg-body-tertiary">
+                                    <button id="font-dec-btn" class="btn btn-sm btn-link text-decoration-none px-2 py-0"><i data-lucide="minus"></i></button>
+                                    <span id="font-size-val" class="small fw-bold">100%</span>
+                                    <button id="font-inc-btn" class="btn btn-sm btn-link text-decoration-none px-2 py-0"><i data-lucide="plus"></i></button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Theme Toggle Buttons -->
+                    <div class="theme-selector btn-group shadow-sm" role="group" aria-label="Selector de temas">
+                        <button type="button" class="btn btn-sm btn-outline-secondary theme-btn active-light" data-set-theme="light" title="Modo Claro">
+                            <i data-lucide="sun"></i>
+                        </button>
+                        <button type="button" class="btn btn-sm btn-outline-secondary theme-btn active-sepia" data-set-theme="sepia" title="Modo Sepia">
+                            <i data-lucide="coffee"></i>
+                        </button>
+                        <button type="button" class="btn btn-sm btn-outline-secondary theme-btn active-dark" data-set-theme="dark" title="Modo Oscuro">
+                            <i data-lucide="moon"></i>
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </header>
+
+        <!-- ==================== VIEW: LIBRARY ==================== -->
+        <main id="library-view" class="app-view active flex-grow-1 py-4">
+            <div class="container container-custom">
+                <!-- Welcome Card -->
+                <div class="welcome-card card border-0 shadow-sm p-4 mb-4 text-white">
+                    <div class="card-body">
+                        <h2 class="card-title fw-bold mb-2">Mi Biblioteca Local</h2>
+                        <p class="card-text mb-0 opacity-75">Sube tus archivos EPUB. Tu progreso de lectura y configuraciones se guardan de forma segura en este dispositivo.</p>
+                    </div>
+                </div>
+
+                <!-- Dropzone / File Upload -->
+                <div id="drop-zone" class="drop-zone card border-2 border-dashed rounded-3 p-5 text-center mb-5 shadow-sm">
+                    <input type="file" id="file-input" accept=".epub" class="d-none">
+                    <div class="drop-zone-content d-flex flex-column align-items-center">
+                        <div class="upload-icon-wrapper bg-primary bg-opacity-10 text-primary p-3 rounded-circle mb-3 shadow-sm">
+                            <i data-lucide="file-up" style="width: 32px; height: 32px;"></i>
+                        </div>
+                        <h4 class="fw-bold mb-1">Importar Libro</h4>
+                        <p class="text-muted mb-3">Arrastra tu archivo EPUB aquí o <span class="text-primary fw-bold browse-link cursor-pointer">selecciona un archivo</span></p>
+                        <span class="badge bg-secondary bg-opacity-10 text-muted px-3 py-2">Soporta formato .epub</span>
+                    </div>
+                </div>
+
+                <!-- Section Title -->
+                <div class="d-flex align-items-center gap-2 mb-4 border-bottom pb-2">
+                    <i data-lucide="library" class="text-primary"></i>
+                    <h3 class="fw-bold mb-0">Mis Libros</h3>
+                </div>
+
+                <!-- Book Grid -->
+                <div id="book-grid" class="row row-cols-1 row-cols-sm-2 row-cols-md-3 row-cols-lg-4 g-4">
+                    <!-- Dynamic Book Cards go here -->
+                    <div id="library-empty" class="col-12 text-center py-5">
+                        <div class="text-muted py-4">
+                            <i data-lucide="folder-open" class="mb-3 opacity-50" style="width: 48px; height: 48px;"></i>
+                            <p class="fs-5 mb-0">No tienes libros agregados aún.</p>
+                            <p class="small text-muted">Sube un archivo EPUB en la sección de arriba para comenzar a leer.</p>
                         </div>
                     </div>
                 </div>
-            </header>
-
-            <!-- Viewer Area -->
-            <div id="reader-workspace">
-                <button id="prev-page-btn" class="nav-arrow-btn left" aria-label="Página anterior">
-                    <i data-lucide="chevron-left"></i>
-                </button>
-
-                <div id="viewer-container">
-                    <div id="viewer"></div>
-                </div>
-
-                <button id="next-page-btn" class="nav-arrow-btn right" aria-label="Página siguiente">
-                    <i data-lucide="chevron-right"></i>
-                </button>
             </div>
+        </main>
 
-            <!-- Bottom Control Panel: Text-to-Speech Player -->
-            <footer id="tts-player-panel" class="tts-player-panel">
-                <div class="tts-left">
-                    <div class="tts-indicator">
-                        <div class="tts-indicator-pulse"></div>
-                        <span id="tts-status-text">Lectura asistida por voz</span>
-                    </div>
-                    <span id="tts-position-text">Página 1 · Bloque 0/0</span>
-                </div>
-
-                <div class="tts-center">
-                    <div class="player-controls">
-                        <button id="tts-prev-btn" class="player-btn tooltip" data-tooltip="Bloque anterior">
-                            <i data-lucide="skip-back"></i>
-                        </button>
-                        <button id="tts-play-btn" class="player-btn play-main tooltip" data-tooltip="Reproducir / Pausar">
-                            <i data-lucide="play" id="tts-play-icon"></i>
-                        </button>
-                        <button id="tts-stop-btn" class="player-btn tooltip" data-tooltip="Detener">
-                            <i data-lucide="square"></i>
-                        </button>
-                        <button id="tts-next-btn" class="player-btn tooltip" data-tooltip="Siguiente bloque">
-                            <i data-lucide="skip-forward"></i>
-                        </button>
+        <!-- ==================== VIEW: READER ==================== -->
+        <main id="reader-view" class="app-view flex-grow-1 py-4 d-none">
+            <!-- Reader Workspace -->
+            <div id="reader-workspace" class="container container-custom pb-5">
+                <div class="row justify-content-center">
+                    <div class="col-lg-10 col-xl-9">
+                        <!-- Native DOM Viewer container -->
+                        <div id="viewer" class="viewer-content">
+                            <!-- Paragraphs will be rendered dynamically here -->
+                        </div>
                     </div>
                 </div>
+            </div>
+        </main>
 
-                <div class="tts-right">
-                    <!-- Voice controls -->
-                    <div class="voice-settings-inline">
-                        <div class="voice-select-wrapper">
-                            <i data-lucide="languages" class="select-icon"></i>
-                            <select id="tts-voice-select" class="custom-select voice-select">
+        <!-- ==================== BOTTOM CONTROL PANEL: TTS PLAYER ==================== -->
+        <footer id="tts-player-panel" class="tts-player-panel sticky-bottom border-top shadow-lg py-3 px-4 d-none">
+            <div class="container-fluid">
+                <div class="row align-items-center g-3">
+                    <!-- TTS Info (Left) -->
+                    <div class="col-12 col-md-3 d-flex align-items-center gap-3">
+                        <div class="tts-indicator position-relative">
+                            <div class="tts-indicator-pulse"></div>
+                        </div>
+                        <div class="tts-text-info overflow-hidden">
+                            <div id="tts-status-text" class="fw-bold text-truncate text-primary">Lectura en Voz Alta</div>
+                            <small id="tts-position-text" class="text-muted text-truncate d-block">Capítulo 0/0 · Bloque 0/0</small>
+                        </div>
+                    </div>
+
+                    <!-- TTS Controls (Center) -->
+                    <div class="col-12 col-md-5 d-flex justify-content-center">
+                        <div class="btn-group shadow-sm" role="group" aria-label="Controles del reproductor">
+                            <button id="tts-prev-btn" class="btn btn-outline-secondary px-3" title="Párrafo anterior">
+                                <i data-lucide="skip-back"></i>
+                            </button>
+                            <button id="tts-play-btn" class="btn btn-primary px-4 py-2" title="Reproducir / Pausar">
+                                <i data-lucide="play" id="tts-play-icon"></i>
+                            </button>
+                            <button id="tts-stop-btn" class="btn btn-outline-secondary px-3" title="Detener">
+                                <i data-lucide="square"></i>
+                            </button>
+                            <button id="tts-next-btn" class="btn btn-outline-secondary px-3" title="Siguiente párrafo">
+                                <i data-lucide="skip-forward"></i>
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- TTS Voice & Speed Settings (Right) -->
+                    <div class="col-12 col-md-4 d-flex align-items-center justify-content-md-end gap-3 flex-wrap flex-sm-nowrap">
+                        <!-- Voice Select -->
+                        <div class="input-group input-group-sm max-width-sm">
+                            <span class="input-group-text bg-body-tertiary border-secondary-subtle">
+                                <i data-lucide="languages" style="width: 14px; height: 14px;"></i>
+                            </span>
+                            <select id="tts-voice-select" class="form-select border-secondary-subtle">
                                 <option value="">Cargando voces...</option>
                             </select>
                         </div>
-                        
-                        <div class="speed-control">
-                            <i data-lucide="gauge"></i>
-                            <span id="tts-speed-val">1.0x</span>
-                            <input type="range" id="tts-speed-slider" min="0.5" max="3" step="0.1" value="1.0" class="speed-slider">
+
+                        <!-- Speed Slider -->
+                        <div class="d-flex align-items-center gap-2 bg-body-tertiary border rounded px-2 py-1 flex-grow-1 flex-sm-grow-0 min-width-xs shadow-sm">
+                            <i data-lucide="gauge" class="text-muted" style="width: 16px; height: 16px;"></i>
+                            <span id="tts-speed-val" class="small fw-bold min-width-2ch">1.0x</span>
+                            <input type="range" id="tts-speed-slider" min="0.5" max="3" step="0.1" value="1.0" class="form-range flex-grow-1" style="width: 80px;">
                         </div>
                     </div>
                 </div>
-            </footer>
-        </main>
+            </div>
+        </footer>
+
+        <!-- ==================== TABLE OF CONTENTS OFFCANVAS ==================== -->
+        <div class="offcanvas offcanvas-start" tabindex="-1" id="tocOffcanvas" aria-labelledby="tocOffcanvasLabel">
+            <div class="offcanvas-header border-bottom">
+                <div class="d-flex align-items-center gap-2">
+                    <i data-lucide="menu" class="text-primary"></i>
+                    <h5 class="offcanvas-title fw-bold" id="tocOffcanvasLabel">Índice del Libro</h5>
+                </div>
+                <button type="button" class="btn-close text-reset" data-bs-dismiss="offcanvas" aria-label="Close"></button>
+            </div>
+            <div class="offcanvas-body p-0">
+                <div id="toc-progress-container" class="p-3 bg-body-tertiary border-bottom d-none">
+                    <span class="small fw-semibold text-muted d-block mb-1">Progreso general</span>
+                    <div class="progress" style="height: 6px;">
+                        <div id="toc-progress-bar" class="progress-bar" role="progressbar" style="width: 0%" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100"></div>
+                    </div>
+                    <small id="toc-progress-text" class="text-muted d-block text-end mt-1 font-size-xs">0% leído</small>
+                </div>
+                <ul id="toc-list" class="list-group list-group-flush">
+                    <!-- Dynamic list items populate here -->
+                </ul>
+            </div>
+        </div>
+        
     </div>
 
     <!-- ==================== DEPENDENCIES ==================== -->
     <!-- Load JSZip (Required for epub.js) -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+    
     <!-- Load epub.js -->
     <script src="https://cdn.jsdelivr.net/npm/epubjs/dist/epub.min.js"></script>
+    
+    <!-- Bootstrap 5 Bundle JS -->
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
 
     <!-- App JavaScript -->
     <script src="app.js"></script>

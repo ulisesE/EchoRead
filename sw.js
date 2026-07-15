@@ -1,4 +1,4 @@
-const VERSION = '2.1.0';
+const VERSION = '3.0.0';
 const CACHE_NAME = `echoread-cache-v${VERSION}`;
 
 // Only local assets to guarantee offline load without depending on external CDNs at installation time

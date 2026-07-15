@@ -1,5 +1,5 @@
 /* ==========================================================================
-   EchoRead - Application Logic (ES6 SPA)
+   EchoRead - Application Logic (Bootstrap 5 & Vertical Scroll Layout)
    ========================================================================== */
 
 // --- 1. Storage Manager (IndexedDB & LocalStorage) ---
@@ -25,7 +25,6 @@ class StorageManager {
             request.onupgradeneeded = (e) => {
                 const db = e.target.result;
                 if (!db.objectStoreNames.contains('books')) {
-                    // keyPath is 'id', which will be generated from metadata (title + author + size)
                     db.createObjectStore('books', { keyPath: 'id' });
                 }
             };
@@ -40,7 +39,6 @@ class StorageManager {
             const request = store.getAll();
             
             request.onsuccess = () => {
-                // Return books sorted by lastRead timestamp (newest first)
                 const books = request.result || [];
                 books.sort((a, b) => (b.lastRead || 0) - (a.lastRead || 0));
                 resolve(books);
@@ -82,11 +80,12 @@ class StorageManager {
         });
     }
 
-    updateBookProgress(id, progressCfi, progressPercent) {
+    updateBookProgress(id, progressHref, progressParagraphIndex, progressPercent) {
         return new Promise((resolve, reject) => {
             this.getBook(id).then(book => {
                 if (!book) return reject("Book not found");
-                book.progress = progressCfi;
+                book.progressHref = progressHref;
+                book.progressParagraphIndex = progressParagraphIndex;
                 book.progressPercent = progressPercent;
                 book.lastRead = Date.now();
                 
@@ -131,20 +130,10 @@ class TTSManager {
         this.selectedVoice = null;
         this.speed = 1.0;
         
-        this.textElements = [];
-        this.pageItems = [];
-        this.pageItemIndex = 0;
-        this.currentIndex = -1;
-        this.currentUtterance = null;
+        this.paragraphs = [];
+        this.currentIndex = 0;
+        this.utterance = null;
         this.isPlaying = false;
-        
-        this.autoPlayNextPage = false;
-        this.currentDoc = null;
-        this.targetSpeakIndex = null;
-        this.skipVisibilityCheck = false;
-        this.currentPageIndex = 0;
-        this.isUpdatingLocationFromTTS = false;
-        this.isTurningPageForTTS = false;
         
         // Setup voices
         if (this.synth) {
@@ -167,15 +156,14 @@ class TTSManager {
         
         if (voices.length === 0) {
             const option = document.createElement('option');
-            option.textContent = "No se encontraron voces (TTS)";
+            option.textContent = "Sin voces (TTS)";
             select.appendChild(option);
             return;
         }
         
-        // Sort voices
+        // Sort voices by language then name
         const sorted = [...voices].sort((a, b) => a.lang.localeCompare(b.lang) || a.name.localeCompare(b.name));
         
-        // Populate dropdown
         sorted.forEach((voice, index) => {
             const option = document.createElement('option');
             option.value = index;
@@ -186,34 +174,27 @@ class TTSManager {
             select.appendChild(option);
         });
 
-        // Find default or saved voice
+        // Try to match default or saved voice
         let defaultIndex = -1;
         const settings = this.app.storage.getSettings();
         
-        // 1. Try to restore saved voice
         if (settings.voiceName) {
             defaultIndex = sorted.findIndex(v => v.name === settings.voiceName);
         }
-        
-        // 2. Try to find Mexican Spanish (es-MX)
         if (defaultIndex === -1) {
+            // Mexican Spanish
             defaultIndex = sorted.findIndex(v => {
                 const lang = v.lang.toLowerCase().replace('_', '-');
                 return lang === 'es-mx' || lang.startsWith('es-mx');
             });
         }
-        
-        // 3. Try to find any Spanish voice (es-*)
         if (defaultIndex === -1) {
+            // General Spanish
             defaultIndex = sorted.findIndex(v => v.lang.toLowerCase().startsWith('es'));
         }
-        
-        // 4. Try to find system default voice
         if (defaultIndex === -1) {
             defaultIndex = sorted.findIndex(v => v.default);
         }
-        
-        // 5. Fallback to index 0
         if (defaultIndex === -1) {
             defaultIndex = 0;
         }
@@ -221,16 +202,14 @@ class TTSManager {
         select.selectedIndex = defaultIndex;
         this.selectedVoice = sorted[defaultIndex];
         
-        // Setup listener
         select.onchange = () => {
             this.selectedVoice = sorted[select.selectedIndex];
             const settings = this.app.storage.getSettings();
             settings.voiceName = this.selectedVoice.name;
             this.app.storage.saveSettings(settings);
             
-            // If currently speaking, restart current page item with new voice
             if (this.isPlaying) {
-                this.speakPageItem(this.pageItemIndex);
+                this.speakParagraph(this.currentIndex);
             }
         };
     }
@@ -244,587 +223,43 @@ class TTSManager {
         settings.speed = this.speed;
         this.app.storage.saveSettings(settings);
         
-        // Restart speech if active to apply speed immediately
         if (this.isPlaying) {
-            this.speakPageItem(this.pageItemIndex);
+            this.speakParagraph(this.currentIndex);
         }
     }
 
-    setDocument(doc) {
-        const isSameDoc = (this.currentDoc === doc);
-        this.currentDoc = doc;
-        const wasPlaying = this.isPlaying;
-        
-        // Stop current speaking to prevent overlaps when relocating
-        this.stopSilence();
-        this.clearHighlights();
-        
-        if (!isSameDoc) {
-            // Find all readable nodes inside the iframe doc
-            const selectors = 'p, h1, h2, h3, h4, h5, h6, li';
-            const rawElements = Array.from(doc.querySelectorAll(selectors));
-            
-            // Filter elements with non-empty text, excluding nav/header/footer content
-            this.textElements = rawElements.filter(el => {
-                const text = el.textContent.trim();
-                // Skip short metadata, SVGs, header/footers or empty items
-                if (text.length === 0) return false;
-                if (el.closest('header, footer, nav, noscript, svg')) return false;
-                return true;
-            });
-            
-            // Generate CFI for each element
-            const location = this.app.reader.rendition ? this.app.reader.rendition.currentLocation() : null;
-            const section = location && location.start ? this.app.reader.book.section(location.start.href) : null;
-            
-            // Add click events and attach CFI to text elements
-            this.textElements.forEach((el, index) => {
-                el.style.cursor = 'pointer';
-                el.addEventListener('click', (e) => {
-                    e.stopPropagation();
-                    this.startFromElement(index);
-                });
-                
-                if (section) {
-                    try {
-                        el.cfi = section.cfiFromElement(el);
-                    } catch (err) {
-                        console.warn("Failed to generate CFI for element", el, err);
-                        el.cfi = null;
-                    }
-                } else {
-                    el.cfi = null;
-                }
-            });
-        }
-        
-        // Find the index of the first visible paragraph on the current page view
-        // Wait 150ms for epub.js layout to settle before measuring
-        setTimeout(() => {
-            this.syncPageItems();
-            this.updatePositionUI();
-            
-            // If it was playing, resume speaking from the first visible page item
-            if (wasPlaying || this.autoPlayNextPage) {
-                this.autoPlayNextPage = false;
-                this.isTurningPageForTTS = false;
-                this.isPlaying = true;
-                this.updatePlayerUI();
-                this.speakPageItem(0);
-            } else {
-                this.highlightCurrentPageItem();
-            }
-        }, 150);
-    }
-
-    getParagraphPageIndex(el) {
-        if (!el) return 0;
-        const contents = this.app.reader.rendition ? this.app.reader.rendition.getContents()[0] : null;
-        if (!contents) return 0;
-
-        const rendition = this.app.reader.rendition;
-        const isPaginated = rendition && rendition.settings.flow === 'paginated';
-
-        if (isPaginated) {
-            const doc = contents.document;
-            const viewportWidth = doc.documentElement.clientWidth || contents.window.innerWidth || window.innerWidth || 360;
-
-            if (el.cfi && typeof rendition.locationOf === 'function') {
-                try {
-                    const location = rendition.locationOf(el.cfi);
-                    if (location && Number.isFinite(location.left)) {
-                        return Math.max(0, Math.round(location.left / viewportWidth));
-                    }
-                } catch (err) {
-                    console.warn("Failed to locate element page by CFI", err);
-                }
-            }
-
-            const rect = el.getBoundingClientRect();
-            const scrollLeft = doc.documentElement.scrollLeft || doc.body.scrollLeft || 0;
-            const absoluteLeft = rect.left + scrollLeft;
-            return Math.max(0, Math.round(absoluteLeft / viewportWidth));
-        }
-
-        const viewportHeight = contents.document.documentElement.clientHeight || window.innerHeight;
-
-        // Find absolute top position of the element inside the document
-        let top = 0;
-        let current = el;
-        while (current && current.offsetParent) {
-            top += current.offsetTop || 0;
-            current = current.offsetParent;
-        }
-
-        return Math.floor(top / (viewportHeight || 600));
-    }
-
-    getCurrentReaderPageIndex() {
-        if (!this.app.reader.rendition) return 0;
-        const contents = this.app.reader.rendition.getContents()[0];
-        if (!contents) return 0;
-
-        const rendition = this.app.reader.rendition;
-        const doc = contents.document;
-        const viewportWidth = doc.documentElement.clientWidth || contents.window.innerWidth || window.innerWidth || 360;
-
-        if (rendition.settings.flow === 'paginated' && typeof rendition.locationOf === 'function') {
-            const location = rendition.currentLocation ? rendition.currentLocation() : null;
-            const cfi = location && location.start ? location.start.cfi : null;
-
-            if (cfi) {
-                try {
-                    const pageLocation = rendition.locationOf(cfi);
-                    if (pageLocation && Number.isFinite(pageLocation.left)) {
-                        return Math.max(0, Math.round(pageLocation.left / viewportWidth));
-                    }
-                } catch (err) {
-                    console.warn("Failed to locate current reader page by CFI", err);
-                }
-            }
-        }
-
-        const scrollLeft = doc.documentElement.scrollLeft || doc.body.scrollLeft || 0;
-
-        return Math.round(scrollLeft / (viewportWidth || 360));
-    }
-
-    findFirstParagraphOnPage(pageIndex) {
-        const firstVisible = this.findFirstVisibleParagraph();
-        if (firstVisible !== -1) {
-            return firstVisible;
-        }
-
-        let firstAhead = -1;
-        let closestIndex = 0;
-        let closestDistance = Number.POSITIVE_INFINITY;
-
-        for (let i = 0; i < this.textElements.length; i++) {
-            const paragraphPageIndex = this.getParagraphPageIndex(this.textElements[i]);
-
-            if (paragraphPageIndex === pageIndex) {
-                return i;
-            }
-
-            if (firstAhead === -1 && paragraphPageIndex > pageIndex) {
-                firstAhead = i;
-            }
-
-            const distance = Math.abs(paragraphPageIndex - pageIndex);
-            if (distance < closestDistance) {
-                closestDistance = distance;
-                closestIndex = i;
-            }
-        }
-
-        return firstAhead !== -1 ? firstAhead : closestIndex;
-    }
-
-    isPaginatedMode() {
-        return this.app.reader.rendition && this.app.reader.rendition.settings.flow === 'paginated';
-    }
-
-    isElementVisibleInReader(el) {
-        if (!el) return false;
-        const contents = this.app.reader.rendition ? this.app.reader.rendition.getContents()[0] : null;
-        if (!contents) return false;
-
-        const doc = contents.document;
-        const viewportWidth = doc.documentElement.clientWidth || contents.window.innerWidth || window.innerWidth || 360;
-        const viewportHeight = doc.documentElement.clientHeight || contents.window.innerHeight || window.innerHeight || 600;
-        const horizontalPadding = Math.max(24, viewportWidth * 0.08);
-        const rects = Array.from(el.getClientRects());
-
-        return rects.some(rect => (
-            rect.width > 0 &&
-            rect.height > 0 &&
-            rect.right > horizontalPadding &&
-            rect.left < viewportWidth - horizontalPadding &&
-            rect.bottom > 0 &&
-            rect.top < viewportHeight
-        ));
-    }
-
-    getVisibleRects(el) {
-        if (!el) return [];
-        const contents = this.app.reader.rendition ? this.app.reader.rendition.getContents()[0] : null;
-        if (!contents) return [];
-
-        const doc = contents.document;
-        const viewportWidth = doc.documentElement.clientWidth || contents.window.innerWidth || window.innerWidth || 360;
-        const viewportHeight = doc.documentElement.clientHeight || contents.window.innerHeight || window.innerHeight || 600;
-        const horizontalPadding = Math.max(24, viewportWidth * 0.08);
-
-        return Array.from(el.getClientRects()).filter(rect => (
-            rect.width > 0 &&
-            rect.height > 0 &&
-            rect.right > horizontalPadding &&
-            rect.left < viewportWidth - horizontalPadding &&
-            rect.bottom > 0 &&
-            rect.top < viewportHeight
-        ));
-    }
-
-    getPointRange(doc, x, y) {
-        if (doc.caretPositionFromPoint) {
-            const position = doc.caretPositionFromPoint(x, y);
-            if (!position || !position.offsetNode) return null;
-            return {
-                node: position.offsetNode,
-                offset: position.offset
-            };
-        }
-
-        if (doc.caretRangeFromPoint) {
-            const range = doc.caretRangeFromPoint(x, y);
-            if (!range) return null;
-            return {
-                node: range.startContainer,
-                offset: range.startOffset
-            };
-        }
-
-        return null;
-    }
-
-    isPointInsideElement(point, el) {
-        return point && point.node && (point.node === el || el.contains(point.node));
-    }
-
-    getVisibleTextForElement(el) {
-        const fallback = el.textContent.trim().replace(/\s+/g, ' ');
-        if (!this.isPaginatedMode()) return fallback;
-
-        const contents = this.app.reader.rendition ? this.app.reader.rendition.getContents()[0] : null;
-        const rects = this.getVisibleRects(el);
-        if (!contents || rects.length === 0) return fallback;
-
-        const doc = contents.document;
-        const viewportWidth = doc.documentElement.clientWidth || contents.window.innerWidth || window.innerWidth || 360;
-        const viewportHeight = doc.documentElement.clientHeight || contents.window.innerHeight || window.innerHeight || 600;
-        const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
-        const first = rects[0];
-        const last = rects[rects.length - 1];
-        const start = this.getPointRange(
-            doc,
-            clamp(first.left + 1, 1, viewportWidth - 2),
-            clamp(first.top + Math.min(4, first.height / 2), 1, viewportHeight - 2)
-        );
-        const end = this.getPointRange(
-            doc,
-            clamp(last.right - 1, 1, viewportWidth - 2),
-            clamp(last.bottom - Math.min(4, last.height / 2), 1, viewportHeight - 2)
-        );
-
-        if (!this.isPointInsideElement(start, el) || !this.isPointInsideElement(end, el)) {
-            return fallback;
-        }
-
-        try {
-            const range = doc.createRange();
-            range.setStart(start.node, start.offset);
-            range.setEnd(end.node, end.offset);
-
-            if (range.collapsed) {
-                const swappedRange = doc.createRange();
-                swappedRange.setStart(end.node, end.offset);
-                swappedRange.setEnd(start.node, start.offset);
-
-                if (!swappedRange.collapsed) {
-                    const swappedText = swappedRange.toString().trim().replace(/\s+/g, ' ');
-                    if (swappedText) return swappedText;
-                }
-
-                return fallback;
-            }
-
-            const visibleText = range.toString().trim().replace(/\s+/g, ' ');
-            return visibleText || fallback;
-        } catch (err) {
-            console.warn("Failed to extract visible text range", err);
-            return fallback;
-        }
-    }
-
-    getCurrentPageItems() {
-        const items = [];
-
-        this.textElements.forEach((el, index) => {
-            if (!this.isElementVisibleInReader(el)) return;
-
-            const text = this.getVisibleTextForElement(el);
-            if (!text) return;
-
-            items.push({ el, text, sourceIndex: index });
-        });
-
-        return items;
-    }
-
-    syncPageItems(preferredSourceIndex = null) {
-        this.currentPageIndex = this.getCurrentReaderPageIndex();
-        this.pageItems = this.getCurrentPageItems();
-
-        if (this.pageItems.length === 0 && this.textElements.length > 0) {
-            const fallbackIndex = this.findFirstParagraphOnPage(this.currentPageIndex);
-            const fallbackElement = this.textElements[fallbackIndex];
-            if (fallbackElement) {
-                this.pageItems = [{
-                    el: fallbackElement,
-                    text: fallbackElement.textContent.trim().replace(/\s+/g, ' '),
-                    sourceIndex: fallbackIndex
-                }];
-            }
-        }
-
-        this.pageItemIndex = 0;
-
-        if (preferredSourceIndex !== null) {
-            const preferredIndex = this.pageItems.findIndex(item => item.sourceIndex >= preferredSourceIndex);
-            if (preferredIndex !== -1) {
-                this.pageItemIndex = preferredIndex;
-            }
-        }
-
-        const item = this.pageItems[this.pageItemIndex];
-        this.currentIndex = item ? item.sourceIndex : -1;
-    }
-
-    findFirstVisibleParagraph() {
-        if (!this.isPaginatedMode()) return -1;
-
-        for (let i = 0; i < this.textElements.length; i++) {
-            if (this.isElementVisibleInReader(this.textElements[i])) {
-                return i;
-            }
-        }
-
-        return -1;
-    }
-
-    turnPageForTTS(direction) {
-        if (this.isTurningPageForTTS) return;
-        this.isTurningPageForTTS = true;
-        this.autoPlayNextPage = true;
-        this.clearHighlights();
-
-        const turn = direction === 'prev' ? this.app.reader.prevPage() : this.app.reader.nextPage();
-        turn.then(navigated => {
-            if (!navigated) {
-                this.isTurningPageForTTS = false;
-                this.autoPlayNextPage = false;
-                this.stop();
-                if (direction !== 'prev') {
-                    alert("Has llegado al final del libro.");
-                }
-                return;
-            }
-
-            setTimeout(() => {
-                if (!this.isTurningPageForTTS || !this.isPlaying) return;
-
-                const contents = this.app.reader.rendition ? this.app.reader.rendition.getContents()[0] : null;
-                if (contents && contents.document) {
-                    this.setDocument(contents.document);
-                }
-            }, 180);
-        }).catch(() => {
-            this.isTurningPageForTTS = false;
-            this.autoPlayNextPage = false;
-        });
-    }
-
-    speakParagraph(index, useFallbackVoice = false) {
-        this.syncPageItems(index);
-        this.speakPageItem(this.pageItemIndex, useFallbackVoice);
-    }
-
-    speakPageItem(index, useFallbackVoice = false) {
-        if (!this.synth) return;
-        
-        if (this.currentUtterance) {
-            this.currentUtterance.onend = null;
-            this.currentUtterance.onerror = null;
-        }
-        this.synth.cancel();
-        
-        if (index < 0) index = 0;
-        
-        if (this.pageItems.length === 0) {
-            this.syncPageItems();
-        }
-
-        if (index >= this.pageItems.length) {
-            this.turnPageForTTS('next');
-            return;
-        }
-        
-        this.pageItemIndex = index;
-        const item = this.pageItems[this.pageItemIndex];
-        this.currentIndex = item.sourceIndex;
+    setParagraphs(paragraphs, index) {
+        this.paragraphs = paragraphs;
+        this.currentIndex = index;
         this.updatePositionUI();
-
-        if (this.isPaginatedMode() && !this.isElementVisibleInReader(item.el)) {
-            const direction = this.pageItemIndex < index ? 'prev' : 'next';
-            this.turnPageForTTS(direction);
-            return;
-        }
-        
-        this.highlightCurrentPageItem();
-        
-        this.currentUtterance = new SpeechSynthesisUtterance(item.text);
-        
-        // Determine voice to use: fallback to a local Spanish voice (or system default) if cloud voice failed
-        let voiceToUse = this.selectedVoice;
-        if (useFallbackVoice) {
-            const localSpanishVoice = this.voices.find(v => v.localService && v.lang.toLowerCase().startsWith('es'));
-            voiceToUse = localSpanishVoice || null;
-            console.warn("Using fallback local voice:", voiceToUse ? voiceToUse.name : "System default");
-        }
-        
-        if (voiceToUse) {
-            this.currentUtterance.voice = voiceToUse;
-        }
-        this.currentUtterance.rate = this.speed;
-        
-        this.currentUtterance.onend = () => {
-            if (this.isPlaying) {
-                this.speakPageItem(this.pageItemIndex + 1, useFallbackVoice);
-            }
-        };
-        
-        this.currentUtterance.onerror = (e) => {
-            if (e.error !== 'interrupted') {
-                console.warn("TTS Utterance boundary/error: ", e);
-            }
-            if (e.error === 'synthesis-failed' && !useFallbackVoice && this.selectedVoice) {
-                console.warn("TTS cloud voice failed. Retrying with local Spanish fallback voice...");
-                this.speakPageItem(this.pageItemIndex, true);
-                return;
-            }
-            if (e.error !== 'interrupted' && this.isPlaying) {
-                this.speakPageItem(this.pageItemIndex + 1, useFallbackVoice);
-            }
-        };
-        
-        this.isPlaying = true;
-        this.updatePlayerUI();
-        this.synth.speak(this.currentUtterance);
     }
 
-    playPause() {
-        if (!this.synth) return;
-        
-        if (this.isPlaying) {
-            // Pause
-            if (this.currentUtterance) {
-                this.currentUtterance.onend = null;
-                this.currentUtterance.onerror = null;
-            }
-            this.synth.cancel(); // cancel current, set state to paused
-            this.isPlaying = false;
-            this.updatePlayerUI();
-        } else {
-            // Play
-            this.isPlaying = true;
-            this.syncPageItems(this.currentIndex !== -1 ? this.currentIndex : null);
-            this.speakPageItem(this.pageItemIndex);
-        }
-    }
-
-    stop() {
-        if (!this.synth) return;
-        this.isPlaying = false;
-        this.autoPlayNextPage = false;
-        this.targetSpeakIndex = null;
-        if (this.currentUtterance) {
-            this.currentUtterance.onend = null;
-            this.currentUtterance.onerror = null;
-        }
-        this.synth.cancel();
+    highlightParagraph(index) {
         this.clearHighlights();
-        this.currentIndex = 0;
-        this.pageItems = [];
-        this.pageItemIndex = 0;
-        this.updatePositionUI();
-        this.updatePlayerUI();
-    }
-    
-    stopSilence() {
-        if (this.currentUtterance) {
-            this.currentUtterance.onend = null;
-            this.currentUtterance.onerror = null;
+        if (index >= 0 && index < this.paragraphs.length) {
+            this.paragraphs[index].classList.add('tts-highlight');
         }
-        if (this.synth) {
-            this.synth.cancel();
-        }
-    }
-
-    next() {
-        if (this.textElements.length === 0) return;
-        if (this.pageItems.length === 0) {
-            this.syncPageItems();
-        }
-        this.speakPageItem(this.pageItemIndex + 1);
-    }
-
-    prev() {
-        if (this.textElements.length === 0) return;
-        if (this.pageItems.length === 0) {
-            this.syncPageItems();
-        }
-
-        if (this.pageItemIndex > 0) {
-            this.speakPageItem(this.pageItemIndex - 1);
-            return;
-        }
-
-        this.turnPageForTTS('prev');
-    }
-
-    startFromElement(sourceIndex) {
-        this.syncPageItems(sourceIndex);
-        this.isPlaying = true;
-        this.speakPageItem(this.pageItemIndex);
-    }
-
-    highlightElement(index) {
-        this.clearHighlights();
-        if (index >= 0 && index < this.textElements.length) {
-            const el = this.textElements[index];
-            el.classList.add('tts-highlight');
-            
-            // Only scroll into view if NOT in paginated mode (horizontal flow)
-            const isPaginated = this.app.reader.rendition && this.app.reader.rendition.settings.flow === 'paginated';
-            if (!isPaginated) {
-                el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-            }
-        }
-    }
-
-    highlightCurrentPageItem() {
-        this.clearHighlights();
-        const item = this.pageItems[this.pageItemIndex];
-        if (!item) return;
-        item.el.classList.add('tts-highlight');
     }
 
     clearHighlights() {
-        this.textElements.forEach(el => {
+        this.paragraphs.forEach(el => {
             el.classList.remove('tts-highlight');
         });
     }
 
     updatePositionUI() {
-        const total = this.pageItems.length;
-        const current = total > 0 ? this.pageItemIndex + 1 : 0;
-        document.getElementById('tts-position-text').textContent = `Página ${this.currentPageIndex + 1} · Bloque ${current}/${total}`;
+        const total = this.paragraphs.length;
+        const current = total > 0 ? this.currentIndex + 1 : 0;
+        const chapter = this.app.reader.currentChapterIndex + 1;
+        const totalChapters = this.app.reader.spineItems.length;
+        
+        document.getElementById('tts-position-text').textContent = 
+            `Capítulo ${chapter}/${totalChapters} · Párrafo ${current}/${total}`;
     }
 
     updatePlayerUI() {
         const playIcon = document.getElementById('tts-play-icon');
-        const playBtn = document.getElementById('tts-play-btn');
-        const pulse = document.querySelector('.tts-indicator-pulse');
+        const pulse = document.querySelector('.tts-indicator');
         const statusText = document.getElementById('tts-status-text');
         
         if (this.isPlaying) {
@@ -838,230 +273,399 @@ class TTSManager {
         }
         lucide.createIcons();
     }
+
+    play() {
+        if (!this.synth) return;
+        this.isPlaying = true;
+        this.updatePlayerUI();
+        this.speakParagraph(this.currentIndex);
+    }
+
+    speakParagraph(index, useFallbackVoice = false) {
+        if (!this.synth) return;
+
+        if (this.utterance) {
+            this.utterance.onend = null;
+            this.utterance.onerror = null;
+        }
+        this.synth.cancel();
+
+        if (this.paragraphs.length === 0) return;
+
+        // Auto-advance chapter if index goes past last paragraph
+        if (index >= this.paragraphs.length) {
+            const nextChapter = this.app.reader.currentChapterIndex + 1;
+            if (nextChapter < this.app.reader.spineItems.length) {
+                this.app.reader.loadChapter(nextChapter, 0).then(() => {
+                    if (this.isPlaying) {
+                        this.speakParagraph(0);
+                    }
+                });
+            } else {
+                this.stop();
+                alert("Has completado la lectura de este libro.");
+            }
+            return;
+        }
+
+        if (index < 0) index = 0;
+        this.currentIndex = index;
+        this.app.reader.currentParagraphIndex = index;
+        this.updatePositionUI();
+        this.highlightParagraph(index);
+
+        const element = this.paragraphs[index];
+        const text = element.textContent.trim();
+
+        // Scroll to active reading block smoothly
+        element.scrollIntoView({ behavior: 'smooth', block: 'center' });
+
+        this.utterance = new SpeechSynthesisUtterance(text);
+
+        // Fallback to local Spanish voice if remote synthesis breaks (e.g. mobile networks)
+        let voiceToUse = this.selectedVoice;
+        if (useFallbackVoice) {
+            const localSpanishVoice = this.voices.find(v => v.localService && v.lang.toLowerCase().startsWith('es'));
+            voiceToUse = localSpanishVoice || null;
+            console.warn("Utilizando voz local de respaldo:", voiceToUse ? voiceToUse.name : "Sistema");
+        }
+
+        if (voiceToUse) {
+            this.utterance.voice = voiceToUse;
+        }
+        this.utterance.rate = this.speed;
+
+        this.utterance.onend = () => {
+            if (this.isPlaying) {
+                this.speakParagraph(this.currentIndex + 1);
+            }
+        };
+
+        this.utterance.onerror = (e) => {
+            if (e.error === 'synthesis-failed' && !useFallbackVoice && this.selectedVoice) {
+                console.warn("Error en la síntesis. Intentando con voz local de respaldo...");
+                this.speakParagraph(this.currentIndex, true);
+                return;
+            }
+            if (e.error !== 'interrupted' && this.isPlaying) {
+                this.speakParagraph(this.currentIndex + 1);
+            }
+        };
+
+        this.synth.speak(this.utterance);
+        this.app.reader.saveReadingProgress();
+    }
+
+    playPause() {
+        if (this.isPlaying) {
+            this.pause();
+        } else {
+            this.play();
+        }
+    }
+
+    pause() {
+        this.isPlaying = false;
+        if (this.utterance) {
+            this.utterance.onend = null;
+            this.utterance.onerror = null;
+        }
+        if (this.synth) {
+            this.synth.cancel();
+        }
+        this.updatePlayerUI();
+    }
+
+    stop() {
+        this.isPlaying = false;
+        if (this.utterance) {
+            this.utterance.onend = null;
+            this.utterance.onerror = null;
+        }
+        if (this.synth) {
+            this.synth.cancel();
+        }
+        this.clearHighlights();
+        this.updatePlayerUI();
+        this.updatePositionUI();
+    }
+
+    next() {
+        if (this.paragraphs.length === 0) return;
+        this.speakParagraph(this.currentIndex + 1);
+    }
+
+    prev() {
+        if (this.paragraphs.length === 0) return;
+        if (this.currentIndex > 0) {
+            this.speakParagraph(this.currentIndex - 1);
+        } else {
+            // Jump to previous chapter's end paragraph
+            const prevChapter = this.app.reader.currentChapterIndex - 1;
+            if (prevChapter >= 0) {
+                this.app.reader.loadChapter(prevChapter, 9999).then(() => {
+                    if (this.isPlaying) {
+                        this.speakParagraph(this.app.reader.currentParagraphIndex);
+                    }
+                });
+            }
+        }
+    }
+
+    startFromParagraph(index) {
+        this.currentIndex = index;
+        this.isPlaying = true;
+        this.updatePlayerUI();
+        this.speakParagraph(index);
+    }
 }
 
 
-// --- 3. Reader Manager (epub.js controller) ---
+// --- 3. Reader Manager (Vertical DOM Parser) ---
 class ReaderManager {
     constructor(appInstance) {
         this.app = appInstance;
         this.book = null;
-        this.rendition = null;
+        this.spineItems = [];
+        this.paragraphs = [];
+        
         this.currentBookId = null;
-        this.currentLocation = null;
-        this.displayedCfi = null;
+        this.currentChapterIndex = 0;
+        this.currentParagraphIndex = 0;
     }
 
-    loadBook(fileBlob, bookId, savedCfi = null) {
+    loadBook(fileBlob, bookId, savedHref = null, savedParagraphIndex = 0) {
         return new Promise((resolve, reject) => {
-            // Clean up existing book
             this.unloadBook();
             this.currentBookId = bookId;
-            
-            // Init book
             this.book = ePub();
-            
-            // We use ArrayBuffer or Blob
+
             this.book.open(fileBlob).then(() => {
                 return this.book.ready;
             }).then(() => {
-                // Get title for reader header
                 const title = this.book.package.metadata.title || "Libro sin título";
                 document.getElementById('reader-book-title').textContent = title;
                 
-                // Get TOC (Table of Contents)
+                this.spineItems = this.book.spine.spineItems || [];
+                
                 this.populateTOC();
                 
-                // Lock viewer height to workspace client height in pixels to prevent mobile iframe height expansion
-                const workspaceHeight = document.getElementById('reader-workspace').clientHeight || 600;
-                document.getElementById('viewer').style.height = `${workspaceHeight}px`;
+                // Show TOC progress info panel
+                document.getElementById('toc-progress-container').classList.remove('d-none');
                 
-                // Create Rendition inside viewer
-                const settings = this.app.storage.getSettings();
-                this.rendition = this.book.renderTo("viewer", {
-                    width: "100%",
-                    height: "100%",
-                    spread: "none",
-                    flow: "paginated",
-                    allowScriptedContent: true
-                });
-                
-                // Inject custom CSS styling inside the iframe
-                this.rendition.hooks.content.register((contents) => {
-                    // Inject viewport meta tag to force correct layout scale on mobile
-                    let meta = contents.document.querySelector('meta[name="viewport"]');
-                    if (!meta) {
-                        meta = contents.document.createElement('meta');
-                        meta.setAttribute('name', 'viewport');
-                        meta.setAttribute('content', 'width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no');
-                        contents.document.head.appendChild(meta);
+                // Find starting chapter index
+                let startChapterIndex = 0;
+                if (savedHref) {
+                    const cleanSaved = savedHref.split('#')[0];
+                    const foundIndex = this.spineItems.findIndex(item => item.href.includes(cleanSaved) || cleanSaved.includes(item.href));
+                    if (foundIndex !== -1) {
+                        startChapterIndex = foundIndex;
                     }
-                    
-                    // Tap margins to turn pages
-                    contents.document.addEventListener("click", (e) => {
-                        const width = contents.document.documentElement.clientWidth;
-                        const x = e.clientX;
-                        // Skip if user clicks an interactive element or paragraph with click-to-read pointer
-                        if (e.target.closest('a, button, input, select') || e.target.style.cursor === 'pointer') {
-                            return;
-                        }
-                        if (x < width * 0.18) {
-                            this.prevPage();
-                        } else if (x > width * 0.82) {
-                            this.nextPage();
-                        }
-                    });
-                    
-                    contents.addStylesheetRules({
-                        "body": {
-                            "font-family": `${settings.fontFamily} !important`,
-                            "line-height": "1.6 !important",
-                            "padding": "12px 24px !important",
-                            "margin": "0 !important",
-                            "box-sizing": "border-box !important"
-                        },
-                        "p": {
-                            "margin-bottom": "1.2em !important",
-                            "font-size": "inherit !important",
-                            "line-height": "1.6 !important",
-                            "word-wrap": "break-word !important",
-                            "break-inside": "avoid !important",
-                            "-webkit-column-break-inside": "avoid !important",
-                            "page-break-inside": "avoid !important"
-                        },
-                        "li": {
-                            "break-inside": "avoid !important",
-                            "-webkit-column-break-inside": "avoid !important",
-                            "page-break-inside": "avoid !important"
-                        },
-                        "img": {
-                            "max-width": "100% !important",
-                            "height": "auto !important"
-                        },
-                        ".tts-highlight": {
-                            "background-color": "rgba(99, 102, 241, 0.25) !important",
-                            "border-bottom": "2px solid var(--primary-color, #6366f1) !important",
-                            "border-radius": "4px",
-                            "transition": "background-color 0.2s ease, border-bottom 0.2s ease"
-                        }
-                    });
-                });
+                }
                 
-                // Setup themes
-                this.rendition.themes.register("light", {
-                    "body": { "background": "#ffffff", "color": "#0f172a" }
-                });
-                this.rendition.themes.register("sepia", {
-                    "body": { "background": "#fdfaf2", "color": "#431407" }
-                });
-                this.rendition.themes.register("dark", {
-                    "body": { "background": "#0c111d", "color": "#f1f5f9" }
-                });
-                this.rendition.themes.select(settings.theme);
-                this.setFontSize(settings.fontSize);
-
-                // Relocation handler
-                this.rendition.on("relocated", (location) => {
-                    this.currentLocation = location;
-                    this.displayedCfi = location.start.cfi;
-                    
-                    // Save progress
-                    const percentage = Math.round((location.start.percentage || 0) * 100);
-                    this.app.storage.updateBookProgress(this.currentBookId, this.displayedCfi, percentage)
-                        .then(() => {
-                            this.app.ui.refreshLibraryGrid(); // Refresh cards to update visual progress
-                        });
-                    
-                    // Update chapter title
-                    let chapterTitle = "Capítulo";
-                    if (location.start.href && this.book.navigation) {
-                        const chapter = this.book.navigation.get(location.start.href);
-                        if (chapter) {
-                            chapterTitle = chapter.label.trim();
-                        }
-                    }
-                    document.getElementById('reader-chapter-title').textContent = chapterTitle;
-                    
-                    // Highlight active chapter in TOC list
-                    const activeTOCItem = document.querySelector(`#toc-list li[data-href="${location.start.href}"]`);
-                    document.querySelectorAll('#toc-list li').forEach(li => li.classList.remove('active'));
-                    if (activeTOCItem) {
-                        activeTOCItem.classList.add('active');
-                    }
-                    
-                    // Setup new elements in TTS manager
-                    const contents = this.rendition.getContents()[0];
-                    if (contents && contents.document) {
-                        this.app.tts.setDocument(contents.document);
-                    }
-                });
-                
-                // Listen to arrow navigation keys inside reader view
-                this.rendition.on("keyup", (e) => {
-                    if (e.key === "ArrowRight") this.nextPage();
-                    if (e.key === "ArrowLeft") this.prevPage();
-                });
-                
-                // Display the book at either saved CFI or first page
-                this.rendition.display(savedCfi || undefined).then(() => {
+                // Load chapter
+                this.loadChapter(startChapterIndex, savedParagraphIndex).then(() => {
                     resolve();
                 }).catch(reject);
+                
             }).catch(reject);
         });
     }
 
     unloadBook() {
-        this.app.tts.stopSilence();
-        this.app.tts.currentDoc = null; // Reset document reference
-        this.app.tts.targetSpeakIndex = null; // Clear lock
-        if (this.rendition) {
-            this.rendition.destroy();
-            this.rendition = null;
-        }
+        this.app.tts.stop();
         this.book = null;
+        this.spineItems = [];
+        this.paragraphs = [];
         this.currentBookId = null;
-        this.currentLocation = null;
-        this.displayedCfi = null;
+        this.currentChapterIndex = 0;
+        this.currentParagraphIndex = 0;
+        
         document.getElementById('viewer').innerHTML = '';
         document.getElementById('toc-list').innerHTML = '';
+        document.getElementById('toc-progress-container').classList.add('d-none');
     }
 
-    nextPage() {
-        if (this.rendition) {
-            return this.rendition.next().then(() => true).catch(() => false);
+    async loadChapter(chapterIndex, savedParagraphIndex = 0) {
+        if (chapterIndex < 0 || chapterIndex >= this.spineItems.length) return;
+        this.currentChapterIndex = chapterIndex;
+        const item = this.spineItems[chapterIndex];
+        
+        // Sync Offcanvas navigation active item
+        this.updateTOCSelection(item.href);
+        
+        // Loading status inside DOM
+        const viewer = document.getElementById('viewer');
+        viewer.innerHTML = `
+            <div class="d-flex flex-column align-items-center justify-content-center py-5">
+                <div class="spinner-animation mb-3">
+                    <i data-lucide="loader-2" class="text-primary" style="width: 32px; height: 32px;"></i>
+                </div>
+                <span class="text-muted fw-bold">Cargando capítulo...</span>
+            </div>
+        `;
+        lucide.createIcons();
+
+        try {
+            // Load chapter document via epub.js spine
+            const doc = await item.load(this.book.load.bind(this.book));
+            const tempDiv = document.createElement('div');
+            tempDiv.innerHTML = doc.body.innerHTML;
+            
+            // Resolve relative image URLs from archive to local Blob URLs
+            const images = tempDiv.querySelectorAll('img, image');
+            for (const img of images) {
+                let srcAttr = img.getAttribute('src');
+                let isImageTag = img.tagName.toLowerCase() === 'image';
+                if (isImageTag) {
+                    srcAttr = img.getAttribute('xlink:href') || img.getAttribute('href');
+                }
+                if (srcAttr && !srcAttr.startsWith('data:') && !srcAttr.startsWith('blob:')) {
+                    try {
+                        const canonicalPath = item.resolve(srcAttr);
+                        let blobUrl;
+                        if (this.book.archive && typeof this.book.archive.createUrl === 'function') {
+                            blobUrl = await this.book.archive.createUrl(canonicalPath);
+                        } else if (this.book.resources && typeof this.book.resources.createUrl === 'function') {
+                            blobUrl = await this.book.resources.createUrl(canonicalPath);
+                        }
+                        if (blobUrl) {
+                            if (isImageTag) {
+                                img.setAttribute('href', blobUrl);
+                                img.setAttribute('xlink:href', blobUrl);
+                            } else {
+                                img.setAttribute('src', blobUrl);
+                            }
+                            
+                            // Wrap inside a centered container for vertical beauty
+                            const wrapper = document.createElement('div');
+                            wrapper.className = 'reader-image-container';
+                            img.parentNode.insertBefore(wrapper, img);
+                            wrapper.appendChild(img);
+                        }
+                    } catch (err) {
+                        console.warn("No se pudo extraer la imagen del EPUB zip", srcAttr, err);
+                    }
+                }
+            }
+
+            // Extract readable blocks (p, lists, headers, blockquotes)
+            const readableTags = 'p, h1, h2, h3, h4, h5, h6, li, blockquote';
+            const elements = Array.from(tempDiv.querySelectorAll(readableTags));
+            const filteredElements = elements.filter(el => {
+                const text = el.textContent.trim();
+                if (text.length === 0) return false;
+                if (el.closest('header, footer, nav, noscript, svg')) return false;
+                return true;
+            });
+
+            // Mark paragraph indexes
+            filteredElements.forEach((el, index) => {
+                el.classList.add('reader-block');
+                el.setAttribute('data-index', index);
+            });
+
+            // Put items in main viewer DOM
+            viewer.innerHTML = '';
+            while (tempDiv.firstChild) {
+                viewer.appendChild(tempDiv.firstChild);
+            }
+
+            // Bind click interaction directly to readable elements
+            this.paragraphs = Array.from(viewer.querySelectorAll('.reader-block'));
+            this.paragraphs.forEach((el) => {
+                el.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    const index = parseInt(el.getAttribute('data-index'), 10);
+                    this.app.tts.startFromParagraph(index);
+                });
+            });
+
+            // Update chapter text in UI header
+            let chapterTitle = `Capítulo ${chapterIndex + 1}`;
+            if (item.href && this.book.navigation) {
+                const navItem = this.book.navigation.get(item.href);
+                if (navItem) {
+                    chapterTitle = navItem.label.trim();
+                }
+            }
+            document.getElementById('reader-chapter-title').textContent = chapterTitle;
+
+            // Apply font scale and font settings
+            this.applyReaderStyles();
+
+            // Set TTS pointer
+            this.currentParagraphIndex = Math.min(savedParagraphIndex, this.paragraphs.length - 1);
+            if (this.currentParagraphIndex < 0) this.currentParagraphIndex = 0;
+            this.app.tts.setParagraphs(this.paragraphs, this.currentParagraphIndex);
+
+            // Resaltar
+            setTimeout(() => {
+                if (this.paragraphs[this.currentParagraphIndex]) {
+                    this.app.tts.highlightParagraph(this.currentParagraphIndex);
+                    this.paragraphs[this.currentParagraphIndex].scrollIntoView({ behavior: 'smooth', block: 'center' });
+                }
+                this.app.tts.updatePositionUI();
+            }, 120);
+
+            this.saveReadingProgress();
+
+        } catch (err) {
+            console.error("Error al cargar capítulo:", err);
+            viewer.innerHTML = `<div class="alert alert-danger m-3">Error al renderizar el contenido de este capítulo.</div>`;
         }
-        return Promise.resolve(false);
     }
 
-    prevPage() {
-        if (this.rendition) {
-            return this.rendition.prev().then(() => true).catch(() => false);
-        }
-        return Promise.resolve(false);
-    }
-
-    jumpTo(cfi) {
-        if (this.rendition) {
-            this.rendition.display(cfi);
-        }
-    }
-
-    setTheme(themeName) {
-        if (this.rendition) {
-            this.rendition.themes.select(themeName);
-        }
+    applyReaderStyles() {
+        const settings = this.app.storage.getSettings();
+        const viewer = document.getElementById('viewer');
+        if (!viewer) return;
+        
+        // Font Family
+        viewer.setAttribute('data-font-family', settings.fontFamily);
+        
+        // Font Size
+        viewer.style.fontSize = `${settings.fontSize}%`;
     }
 
     setFontSize(sizePercent) {
-        if (this.rendition) {
-            this.rendition.themes.fontSize(`${sizePercent}%`);
-        }
+        const settings = this.app.storage.getSettings();
+        settings.fontSize = sizePercent;
+        this.app.storage.saveSettings(settings);
+        this.applyReaderStyles();
     }
-    
+
     setFontFamily(family) {
-        if (this.rendition) {
-            this.rendition.themes.font(family);
+        const settings = this.app.storage.getSettings();
+        settings.fontFamily = family;
+        this.app.storage.saveSettings(settings);
+        this.applyReaderStyles();
+    }
+
+    saveReadingProgress() {
+        if (!this.currentBookId || !this.spineItems.length) return Promise.resolve();
+        const progressHref = this.spineItems[this.currentChapterIndex].href;
+        const progressParagraphIndex = this.currentParagraphIndex;
+        
+        let progressPercent = 0;
+        if (this.spineItems.length > 0) {
+            const chapterWeight = 1 / this.spineItems.length;
+            const chapterProgress = this.paragraphs.length > 0 ? (this.currentParagraphIndex / this.paragraphs.length) : 0;
+            progressPercent = Math.round(((this.currentChapterIndex + chapterProgress) * chapterWeight) * 100);
+            progressPercent = Math.max(0, Math.min(100, progressPercent));
         }
+
+        return this.app.storage.updateBookProgress(this.currentBookId, progressHref, progressParagraphIndex, progressPercent)
+            .then(() => {
+                this.app.ui.refreshLibraryGrid();
+                const bar = document.getElementById('toc-progress-bar');
+                const text = document.getElementById('toc-progress-text');
+                if (bar && text) {
+                    bar.style.width = `${progressPercent}%`;
+                    bar.setAttribute('aria-valuenow', progressPercent);
+                    text.textContent = `${progressPercent}% leído`;
+                }
+            });
     }
 
     populateTOC() {
@@ -1070,27 +674,79 @@ class ReaderManager {
         
         tocList.innerHTML = '';
         
-        const renderTOCItems = (items) => {
+        const renderTOCItems = (items, level = 0) => {
             items.forEach(item => {
                 const li = document.createElement('li');
+                li.className = 'list-group-item';
+                li.style.paddingLeft = `${1.25 + level * 0.75}rem`;
                 li.textContent = item.label ? item.label.trim() : "Capítulo";
-                li.setAttribute('data-href', item.href);
+                
+                const hrefClean = item.href ? item.href.trim() : "";
+                li.setAttribute('data-href', hrefClean);
                 
                 li.onclick = (e) => {
                     e.stopPropagation();
-                    this.jumpTo(item.href);
-                    document.getElementById('toc-dropdown').parentElement.classList.remove('open');
+                    const baseHref = hrefClean.split('#')[0];
+                    const index = this.spineItems.findIndex(spine => spine.href.includes(baseHref) || baseHref.includes(spine.href));
+                    if (index !== -1) {
+                        const offcanvasEl = document.getElementById('tocOffcanvas');
+                        const offcanvas = bootstrap.Offcanvas.getInstance(offcanvasEl);
+                        if (offcanvas) offcanvas.hide();
+                        
+                        this.loadChapter(index, 0);
+                        if (this.app.tts.isPlaying) {
+                            setTimeout(() => this.app.tts.play(), 200);
+                        }
+                    }
                 };
                 
                 tocList.appendChild(li);
                 
                 if (item.subitems && item.subitems.length > 0) {
-                    renderTOCItems(item.subitems);
+                    renderTOCItems(item.subitems, level + 1);
                 }
             });
         };
         
-        renderTOCItems(this.book.navigation.toc);
+        renderTOCItems(this.book.navigation.toc || []);
+
+        // Fallback to spine items list if TOC metadata is absent
+        if (tocList.children.length === 0 && this.spineItems.length > 0) {
+            this.spineItems.forEach((item, index) => {
+                const li = document.createElement('li');
+                li.className = 'list-group-item';
+                li.textContent = `Capítulo ${index + 1}`;
+                li.setAttribute('data-href', item.href);
+                li.onclick = () => {
+                    const offcanvasEl = document.getElementById('tocOffcanvas');
+                    const offcanvas = bootstrap.Offcanvas.getInstance(offcanvasEl);
+                    if (offcanvas) offcanvas.hide();
+                    
+                    this.loadChapter(index, 0);
+                    if (this.app.tts.isPlaying) {
+                        setTimeout(() => this.app.tts.play(), 200);
+                    }
+                };
+                tocList.appendChild(li);
+            });
+        }
+    }
+
+    updateTOCSelection(activeHref) {
+        const items = document.querySelectorAll('#toc-list .list-group-item');
+        items.forEach(li => li.classList.remove('active'));
+        
+        if (!activeHref) return;
+        const cleanHref = activeHref.split('#')[0];
+        
+        const matched = Array.from(items).find(li => {
+            const dataHref = li.getAttribute('data-href').split('#')[0];
+            return dataHref.includes(cleanHref) || cleanHref.includes(dataHref);
+        });
+        
+        if (matched) {
+            matched.classList.add('active');
+        }
     }
 }
 
@@ -1105,24 +761,19 @@ class UIManager {
         this.setupLibraryEvents();
         this.setupReaderEvents();
         this.setupTTSEvents();
+        this.setupScrollTracker();
         
-        // Initialize visual states from settings
         this.applySettingsUI();
     }
 
     applySettingsUI() {
         const settings = this.app.storage.getSettings();
         
-        // Theme
         this.setAppTheme(settings.theme);
         
-        // Font Size
         document.getElementById('font-size-val').textContent = `${settings.fontSize}%`;
-        
-        // Font Family
         document.getElementById('font-family-select').value = settings.fontFamily;
         
-        // TTS Speed
         this.app.tts.setSpeed(settings.speed);
     }
 
@@ -1130,26 +781,15 @@ class UIManager {
         this.activeTheme = themeName;
         document.body.setAttribute('data-theme', themeName);
         
-        // Sync active state in top-header buttons
+        // Sync active state in navbar buttons
         document.querySelectorAll('.theme-btn').forEach(btn => {
-            if (btn.getAttribute('data-set-theme') === themeName) {
+            const btnTheme = btn.getAttribute('data-set-theme');
+            if (btnTheme === themeName) {
                 btn.classList.add('active');
             } else {
                 btn.classList.remove('active');
             }
         });
-        
-        // Sync active state in reader settings buttons
-        document.querySelectorAll('.theme-picker-btn').forEach(btn => {
-            if (btn.getAttribute('data-theme-val') === themeName) {
-                btn.classList.add('active');
-            } else {
-                btn.classList.remove('active');
-            }
-        });
-        
-        // Sync inside EPUB rendition iframe
-        this.app.reader.setTheme(themeName);
         
         // Save settings
         const settings = this.app.storage.getSettings();
@@ -1158,34 +798,12 @@ class UIManager {
     }
 
     setupGeneralEvents() {
-        // Top header theme buttons
+        // Theme buttons click
         document.querySelectorAll('.theme-btn').forEach(btn => {
             btn.addEventListener('click', () => {
                 const theme = btn.getAttribute('data-set-theme');
                 this.setAppTheme(theme);
             });
-        });
-        
-        // Window resize debounced to resize epub.js iframe
-        let resizeTimeout;
-        window.addEventListener('resize', () => {
-            clearTimeout(resizeTimeout);
-            resizeTimeout = setTimeout(() => {
-                if (this.app.reader.rendition) {
-                    const workspaceHeight = document.getElementById('reader-workspace').clientHeight || 600;
-                    document.getElementById('viewer').style.height = `${workspaceHeight}px`;
-                    this.app.reader.rendition.resize();
-                }
-            }, 250);
-        });
-
-        // Close dropdowns when clicking outside
-        window.addEventListener('click', (e) => {
-            if (!e.target.closest('.dropdown-container')) {
-                document.querySelectorAll('.dropdown-container').forEach(c => {
-                    c.classList.remove('open');
-                });
-            }
         });
     }
 
@@ -1193,15 +811,12 @@ class UIManager {
         const dropZone = document.getElementById('drop-zone');
         const fileInput = document.getElementById('file-input');
         
-        // Handle browse link trigger
         dropZone.addEventListener('click', (e) => {
-            // Avoid trigger looping
             if (e.target.tagName !== 'INPUT') {
                 fileInput.click();
             }
         });
         
-        // Handle drag & drop hover states
         ['dragenter', 'dragover'].forEach(eventName => {
             dropZone.addEventListener(eventName, (e) => {
                 e.preventDefault();
@@ -1216,7 +831,6 @@ class UIManager {
             }, false);
         });
         
-        // Drop file event
         dropZone.addEventListener('drop', (e) => {
             const dt = e.dataTransfer;
             const files = dt.files;
@@ -1225,90 +839,44 @@ class UIManager {
             }
         });
         
-        // File input changed event
         fileInput.addEventListener('change', () => {
             if (fileInput.files && fileInput.files.length > 0) {
                 this.handleImportFile(fileInput.files[0]);
-                fileInput.value = ''; // Reset input
+                fileInput.value = '';
             }
         });
     }
 
     setupReaderEvents() {
-        // Volver / Back to library button
+        // Back to library button
         document.getElementById('close-reader-btn').addEventListener('click', () => {
             this.closeReaderMode();
         });
         
-        // Nav Arrow Buttons
-        document.getElementById('prev-page-btn').addEventListener('click', () => {
-            this.app.reader.prevPage();
-        });
-        
-        document.getElementById('next-page-btn').addEventListener('click', () => {
-            this.app.reader.nextPage();
-        });
-        
-        // Dropdown toggle triggers (TOC & Settings)
-        document.querySelectorAll('.dropdown-container button').forEach(btn => {
-            btn.addEventListener('click', (e) => {
-                e.stopPropagation();
-                const container = btn.parentElement;
-                const wasOpen = container.classList.contains('open');
-                
-                // Close other dropdowns
-                document.querySelectorAll('.dropdown-container').forEach(c => {
-                    c.classList.remove('open');
-                });
-                
-                if (!wasOpen) {
-                    container.classList.add('open');
-                }
-            });
-        });
-        
-        // Theme picker selection in settings panel
-        document.querySelectorAll('.theme-picker-btn').forEach(btn => {
-            btn.addEventListener('click', () => {
-                const theme = btn.getAttribute('data-theme-val');
-                this.setAppTheme(theme);
-            });
-        });
-        
-        // Font family select dropdown
+        // Font select settings dropdown
         document.getElementById('font-family-select').addEventListener('change', (e) => {
-            const val = e.target.value;
-            this.app.reader.setFontFamily(val);
-            
-            const settings = this.app.storage.getSettings();
-            settings.fontFamily = val;
-            this.app.storage.saveSettings(settings);
+            this.app.reader.setFontFamily(e.target.value);
         });
         
-        // Font Size Adjustments
+        // Font Size controls
         document.getElementById('font-inc-btn').addEventListener('click', () => {
             const settings = this.app.storage.getSettings();
             if (settings.fontSize < 200) {
-                settings.fontSize += 10;
-                document.getElementById('font-size-val').textContent = `${settings.fontSize}%`;
-                this.app.reader.setFontSize(settings.fontSize);
-                this.app.storage.saveSettings(settings);
+                this.app.reader.setFontSize(settings.fontSize + 10);
+                document.getElementById('font-size-val').textContent = `${settings.fontSize + 10}%`;
             }
         });
         
         document.getElementById('font-dec-btn').addEventListener('click', () => {
             const settings = this.app.storage.getSettings();
             if (settings.fontSize > 60) {
-                settings.fontSize -= 10;
-                document.getElementById('font-size-val').textContent = `${settings.fontSize}%`;
-                this.app.reader.setFontSize(settings.fontSize);
-                this.app.storage.saveSettings(settings);
+                this.app.reader.setFontSize(settings.fontSize - 10);
+                document.getElementById('font-size-val').textContent = `${settings.fontSize - 10}%`;
             }
         });
     }
 
     setupTTSEvents() {
-        // Controls
         document.getElementById('tts-play-btn').addEventListener('click', () => {
             this.app.tts.playPause();
         });
@@ -1325,82 +893,121 @@ class UIManager {
             this.app.tts.prev();
         });
         
-        // Speed slider adjustments
+        // Speed slider
         const speedSlider = document.getElementById('tts-speed-slider');
         speedSlider.addEventListener('input', (e) => {
             this.app.tts.setSpeed(e.target.value);
         });
     }
 
+    // Scroll tracker: syncs visual position with TTS active block index
+    setupScrollTracker() {
+        let scrollTimeout;
+        window.addEventListener('scroll', () => {
+            // Ignore scroll alignment if TTS speech is reading
+            if (this.app.tts.isPlaying || !document.getElementById('reader-view').classList.contains('active')) {
+                return;
+            }
+            
+            clearTimeout(scrollTimeout);
+            scrollTimeout = setTimeout(() => {
+                this.syncParagraphFromScroll();
+            }, 250);
+        });
+    }
+
+    syncParagraphFromScroll() {
+        const paragraphs = this.app.reader.paragraphs;
+        if (!paragraphs || paragraphs.length === 0) return;
+        
+        const viewportMiddle = window.innerHeight / 2;
+        let closestIndex = 0;
+        let closestDistance = Infinity;
+        
+        for (let i = 0; i < paragraphs.length; i++) {
+            const rect = paragraphs[i].getBoundingClientRect();
+            const elementMiddle = rect.top + rect.height / 2;
+            const distance = Math.abs(elementMiddle - viewportMiddle);
+            
+            if (distance < closestDistance) {
+                closestDistance = distance;
+                closestIndex = i;
+            }
+        }
+        
+        this.app.reader.currentParagraphIndex = closestIndex;
+        this.app.tts.currentIndex = closestIndex;
+        
+        this.app.tts.highlightParagraph(closestIndex);
+        this.app.tts.updatePositionUI();
+        
+        this.app.reader.saveReadingProgress();
+    }
+
     // --- Core Operations ---
     handleImportFile(file) {
         if (!file.name.endsWith('.epub')) {
-            alert("Error: Por favor sube únicamente archivos en formato .epub");
+            alert("Error: Por favor selecciona únicamente archivos en formato .epub");
             return;
         }
         
-        // Loading state
         const dropZone = document.getElementById('drop-zone');
         const origContent = dropZone.innerHTML;
         dropZone.style.pointerEvents = 'none';
         dropZone.innerHTML = `
-            <div class="upload-icon-wrapper spinner-animation">
-                <i data-lucide="loader-2"></i>
+            <div class="upload-icon-wrapper spinner-animation text-primary mb-3">
+                <i data-lucide="loader-2" style="width: 32px; height: 32px;"></i>
             </div>
-            <h3>Procesando libro...</h3>
-            <p>Extrayendo metadatos y portada</p>
+            <h4 class="fw-bold">Procesando libro...</h4>
+            <p class="text-muted">Extrayendo portadas y metadatos del EPUB</p>
         `;
         lucide.createIcons();
         
-        // Temporarily load in memory with epub.js to extract metadata & cover
-        const book = ePub();
-        book.open(file).then(async () => {
-            await book.ready;
+        const tempBook = ePub();
+        tempBook.open(file).then(async () => {
+            await tempBook.ready;
             
-            const metadata = book.package.metadata;
+            const metadata = tempBook.package.metadata;
             const title = metadata.title ? metadata.title.trim() : file.name.replace('.epub', '');
             const author = metadata.creator ? metadata.creator.trim() : 'Autor Desconocido';
             
-            // Extract cover
+            // Extract cover image as Blob
             let coverBlob = null;
             try {
-                const coverUrl = await book.coverUrl();
+                const coverUrl = await tempBook.coverUrl();
                 if (coverUrl) {
                     const response = await fetch(coverUrl);
                     coverBlob = await response.blob();
                 }
             } catch (err) {
-                console.warn("Cover image extraction failed", err);
+                console.warn("No se pudo extraer la portada", err);
             }
             
-            // Generate unique ID (título + autor + size)
             const idInput = `${title}-${author}-${file.size}`.toLowerCase().replace(/[^a-z0-9]/g, '-');
             
             const bookRecord = {
                 id: idInput,
                 title: title,
                 author: author,
-                cover: coverBlob, // Saved as Blob object in IndexedDB
-                file: file, // Full file Blob
-                progress: null, // CFI pointer
+                cover: coverBlob,
+                file: file,
+                progressHref: null,
+                progressParagraphIndex: 0,
                 progressPercent: 0,
                 lastRead: Date.now(),
                 addedAt: Date.now()
             };
             
-            // Save to IndexedDB
             this.app.storage.saveBook(bookRecord).then(() => {
-                // Restore Dropzone UI
                 dropZone.innerHTML = origContent;
                 dropZone.style.pointerEvents = 'auto';
                 lucide.createIcons();
-                this.setupLibraryEvents(); // Rebind since innerHTML was reset
+                this.setupLibraryEvents(); // Rebind events
                 
-                // Refresh library list
                 this.refreshLibraryGrid();
             }).catch(e => {
                 console.error(e);
-                alert("Error al guardar el libro en la base de datos.");
+                alert("Error al guardar el libro.");
                 dropZone.innerHTML = origContent;
                 dropZone.style.pointerEvents = 'auto';
                 lucide.createIcons();
@@ -1408,7 +1015,7 @@ class UIManager {
             });
         }).catch(err => {
             console.error(err);
-            alert("Error al procesar el archivo EPUB. Puede estar corrupto.");
+            alert("Error al abrir el EPUB. El archivo podría estar dañado.");
             dropZone.innerHTML = origContent;
             dropZone.style.pointerEvents = 'auto';
             lucide.createIcons();
@@ -1421,23 +1028,25 @@ class UIManager {
         const empty = document.getElementById('library-empty');
         
         this.app.storage.getAllBooks().then(books => {
-            // Remove existing card nodes (keep empty item only if no books)
             const cards = grid.querySelectorAll('.book-card');
             cards.forEach(card => card.remove());
             
             if (books.length === 0) {
-                empty.style.display = 'flex';
+                empty.style.display = 'block';
                 return;
             }
             
             empty.style.display = 'none';
             
             books.forEach(book => {
+                const col = document.createElement('div');
+                col.className = 'col book-card-col';
+                
                 const card = document.createElement('div');
-                card.className = 'book-card';
+                card.className = 'book-card shadow-sm';
                 card.setAttribute('data-id', book.id);
                 
-                // Cover
+                // Cover Image Container
                 const coverContainer = document.createElement('div');
                 coverContainer.className = 'book-cover-container';
                 
@@ -1448,18 +1057,17 @@ class UIManager {
                     img.alt = book.title;
                     coverContainer.appendChild(img);
                 } else {
-                    // Fallback visual placeholder
                     const placeholder = document.createElement('div');
                     placeholder.className = 'book-cover-placeholder';
                     placeholder.innerHTML = `
                         <span class="placeholder-logo">ECHOREAD</span>
-                        <h4 class="placeholder-title">${book.title}</h4>
-                        <span class="placeholder-author">${book.author}</span>
+                        <h5 class="placeholder-title mt-4">${book.title}</h5>
+                        <span class="placeholder-author mb-2 text-truncate d-block">${book.author}</span>
                     `;
                     coverContainer.appendChild(placeholder);
                 }
                 
-                // Hover actions overlay
+                // Action Overlays
                 const overlay = document.createElement('div');
                 overlay.className = 'card-overlay';
                 
@@ -1476,7 +1084,7 @@ class UIManager {
                 deleteBtn.innerHTML = `<i data-lucide="trash-2"></i>`;
                 deleteBtn.onclick = (e) => {
                     e.stopPropagation();
-                    if (confirm(`¿Estás seguro de que quieres eliminar "${book.title}" de tu biblioteca?`)) {
+                    if (confirm(`¿Eliminar "${book.title}" de la biblioteca?`)) {
                         this.app.storage.deleteBook(book.id).then(() => {
                             this.refreshLibraryGrid();
                         });
@@ -1492,16 +1100,16 @@ class UIManager {
                 const details = document.createElement('div');
                 details.className = 'book-details';
                 
-                const title = document.createElement('h3');
-                title.className = 'book-title';
+                const title = document.createElement('h5');
+                title.className = 'book-title fw-bold';
                 title.textContent = book.title;
                 
                 const author = document.createElement('span');
-                author.className = 'book-author';
+                author.className = 'book-author text-muted small';
                 author.textContent = book.author;
                 
                 const progressWrapper = document.createElement('div');
-                progressWrapper.className = 'book-progress-wrapper';
+                progressWrapper.className = 'book-progress-wrapper w-100';
                 
                 const barContainer = document.createElement('div');
                 barContainer.className = 'progress-bar-container';
@@ -1511,10 +1119,10 @@ class UIManager {
                 barFill.style.width = `${book.progressPercent || 0}%`;
                 
                 const labels = document.createElement('div');
-                labels.className = 'progress-labels';
+                labels.className = 'progress-labels d-flex justify-content-between mt-1 text-muted small';
                 labels.innerHTML = `
                     <span>Progreso</span>
-                    <span>${book.progressPercent || 0}%</span>
+                    <span class="fw-bold text-primary">${book.progressPercent || 0}%</span>
                 `;
                 
                 barContainer.appendChild(barFill);
@@ -1526,59 +1134,73 @@ class UIManager {
                 details.appendChild(progressWrapper);
                 card.appendChild(details);
                 
-                // Double click / Click to open anywhere on card
+                // Open on click
                 card.onclick = () => {
                     this.openBookInReader(book.id);
                 };
                 
-                grid.appendChild(card);
+                col.appendChild(card);
+                grid.appendChild(col);
             });
             
-            // Create icons
             lucide.createIcons();
         });
     }
 
     openBookInReader(bookId) {
-        // Load details from DB
         this.app.storage.getBook(bookId).then(book => {
             if (!book) return;
             
-            // Show loading placeholder inside reader
             const viewer = document.getElementById('viewer');
             viewer.innerHTML = `
-                <div class="reader-loading-spinner" style="display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; gap: 16px;">
-                    <div class="upload-icon-wrapper spinner-animation" style="margin-bottom:0;">
-                        <i data-lucide="loader-2" style="width:32px; height:32px; color:var(--primary-color)"></i>
+                <div class="d-flex flex-column align-items-center justify-content-center py-5">
+                    <div class="spinner-animation mb-3">
+                        <i data-lucide="loader-2" class="text-primary" style="width: 32px; height: 32px;"></i>
                     </div>
-                    <span style="font-weight:600; color:var(--text-secondary)">Cargando libro...</span>
+                    <span class="text-muted fw-bold">Cargando libro...</span>
                 </div>
             `;
             lucide.createIcons();
             
-            // Switch views
-            document.getElementById('library-view').classList.remove('active');
-            document.getElementById('reader-view').classList.add('active');
+            // Switch views in UI
+            document.getElementById('library-view').classList.add('d-none');
+            document.getElementById('reader-view').classList.remove('d-none');
+            document.getElementById('tts-player-panel').classList.remove('d-none');
             
-            // Wait for browser layout to settle so epub.js measures width correctly
+            // Toggle navbar items
+            document.getElementById('close-reader-btn').classList.remove('d-none');
+            document.getElementById('reader-title-info').classList.remove('d-none');
+            document.getElementById('toc-btn').classList.remove('d-none');
+            document.getElementById('text-settings-dropdown-wrapper').classList.remove('d-none');
+            
             setTimeout(() => {
-                this.app.reader.loadBook(book.file, book.id, book.progress).then(() => {
-                    // Done loading
-                    const spinner = viewer.querySelector('.reader-loading-spinner');
-                    if (spinner) spinner.remove();
-                }).catch(err => {
-                    console.error(err);
-                    alert("Error al renderizar el libro. Volviendo a la biblioteca.");
-                    this.closeReaderMode();
-                });
-            }, 100);
+                this.app.reader.loadBook(book.file, book.id, book.progressHref, book.progressParagraphIndex)
+                    .then(() => {
+                        // Done loading
+                    })
+                    .catch(err => {
+                        console.error(err);
+                        alert("Error al cargar el libro. Regresando a biblioteca.");
+                        this.closeReaderMode();
+                    });
+            }, 150);
         });
     }
 
     closeReaderMode() {
         this.app.reader.unloadBook();
-        document.getElementById('reader-view').classList.remove('active');
-        document.getElementById('library-view').classList.add('active');
+        
+        // Toggle views
+        document.getElementById('reader-view').classList.add('d-none');
+        document.getElementById('tts-player-panel').classList.add('d-none');
+        document.getElementById('library-view').classList.remove('d-none');
+        
+        // Toggle navbar items
+        document.getElementById('close-reader-btn').classList.add('d-none');
+        document.getElementById('reader-title-info').classList.add('d-none');
+        document.getElementById('toc-btn').classList.add('d-none');
+        document.getElementById('text-settings-dropdown-wrapper').classList.add('d-none');
+        
         this.refreshLibraryGrid();
     }
 }
@@ -1595,29 +1217,28 @@ class EchoReadApp {
 
     init() {
         this.storage.init().then(() => {
-            console.log("StorageManager DB initialized successfully.");
+            console.log("IndexedDB inicializado.");
             this.ui.refreshLibraryGrid();
         }).catch(err => {
-            console.error("Failed to initialize database", err);
-            alert("Advertencia: No se pudo cargar el almacenamiento IndexedDB. Los libros no se guardarán al reiniciar.");
+            console.error("Fallo al inicializar base de datos:", err);
+            alert("Atención: No se pudo cargar el almacenamiento local (IndexedDB). Tus libros no se mantendrán al reiniciar.");
         });
         
-        // Initial setup for Lucide Icons
         lucide.createIcons();
     }
 }
 
-// Instantiate and start app on page load
+// Start app on DOMContentLoaded
 window.addEventListener('DOMContentLoaded', () => {
     window.app = new EchoReadApp();
     window.app.init();
     
-    // Register Service Worker for PWA offline capabilities
+    // Register PWA Service Worker
     if ('serviceWorker' in navigator) {
         window.addEventListener('load', () => {
             navigator.serviceWorker.register('./sw.js')
-                .then(reg => console.log('Service Worker registered successfully with scope:', reg.scope))
-                .catch(err => console.error('Service Worker registration failed:', err));
+                .then(reg => console.log('Service Worker registrado con éxito. Scope:', reg.scope))
+                .catch(err => console.error('Fallo al registrar Service Worker:', err));
         });
     }
 });
