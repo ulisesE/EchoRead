@@ -510,7 +510,24 @@ class ReaderManager {
             // Load chapter document via epub.js spine
             const doc = await item.load(this.book.load.bind(this.book));
             const tempDiv = document.createElement('div');
-            tempDiv.innerHTML = doc.body.innerHTML;
+            
+            if (typeof doc === 'string') {
+                tempDiv.innerHTML = doc;
+            } else if (doc) {
+                let bodyNode = null;
+                if (typeof doc.querySelector === 'function') {
+                    bodyNode = doc.querySelector('body');
+                }
+                if (!bodyNode && typeof doc.getElementsByTagName === 'function') {
+                    bodyNode = doc.getElementsByTagName('body')[0];
+                }
+                if (!bodyNode) {
+                    bodyNode = doc.documentElement;
+                }
+                tempDiv.innerHTML = bodyNode ? bodyNode.innerHTML : '';
+            } else {
+                tempDiv.innerHTML = '';
+            }
             
             // Resolve relative image URLs from archive to local Blob URLs
             const images = tempDiv.querySelectorAll('img, image');
