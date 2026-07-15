@@ -1167,8 +1167,8 @@ h1, h2, h3, h4, h5, h6 {
     /* Responsive Player Panel */
     .tts-player-panel {
         flex-direction: column;
-        padding: 14px 16px;
-        gap: 12px;
+        padding: 10px 14px;
+        gap: 10px;
     }
     
     .tts-left {
@@ -1179,7 +1179,7 @@ h1, h2, h3, h4, h5, h6 {
         width: 100%;
         min-width: 100%;
         border-bottom: 1px solid var(--border-color);
-        padding-bottom: 8px;
+        padding-bottom: 6px;
     }
     
     #tts-position-text {
@@ -1194,7 +1194,17 @@ h1, h2, h3, h4, h5, h6 {
     }
     
     .player-controls {
-        gap: 20px; /* larger tap targets spacing */
+        gap: 14px;
+    }
+
+    .player-btn {
+        width: 38px;
+        height: 38px;
+    }
+
+    .player-btn.play-main {
+        width: 48px;
+        height: 48px;
     }
     
     .tts-right {
@@ -1204,7 +1214,8 @@ h1, h2, h3, h4, h5, h6 {
     }
     
     .voice-settings-inline {
-        flex-direction: column;
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) minmax(150px, 0.75fr);
         gap: 8px;
         width: 100%;
     }
@@ -1219,7 +1230,7 @@ h1, h2, h3, h4, h5, h6 {
     }
     
     .speed-slider {
-        max-width: 70%;
+        max-width: 100%;
     }
 }
 
@@ -1300,6 +1311,10 @@ h1, h2, h3, h4, h5, h6 {
     #toc-list {
         max-height: 40vh;
     }
+
+    .voice-settings-inline {
+        grid-template-columns: 1fr;
+    }
 }
 
 /* Disable hover overlay on touch screens and show static action buttons */
@@ -1324,4 +1339,3 @@ h1, h2, h3, h4, h5, h6 {
         box-shadow: var(--shadow-md) !important;
     }
 }
-

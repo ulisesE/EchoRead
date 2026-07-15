@@ -329,9 +329,33 @@ class TTSManager {
         if (!el) return 0;
         const contents = this.app.reader.rendition ? this.app.reader.rendition.getContents()[0] : null;
         if (!contents) return 0;
-        
+
+        const rendition = this.app.reader.rendition;
+        const isPaginated = rendition && rendition.settings.flow === 'paginated';
+
+        if (isPaginated) {
+            const doc = contents.document;
+            const viewportWidth = doc.documentElement.clientWidth || contents.window.innerWidth || window.innerWidth || 360;
+
+            if (el.cfi && typeof rendition.locationOf === 'function') {
+                try {
+                    const location = rendition.locationOf(el.cfi);
+                    if (location && Number.isFinite(location.left)) {
+                        return Math.max(0, Math.round(location.left / viewportWidth));
+                    }
+                } catch (err) {
+                    console.warn("Failed to locate element page by CFI", err);
+                }
+            }
+
+            const rect = el.getBoundingClientRect();
+            const scrollLeft = doc.documentElement.scrollLeft || doc.body.scrollLeft || 0;
+            const absoluteLeft = rect.left + scrollLeft;
+            return Math.max(0, Math.round(absoluteLeft / viewportWidth));
+        }
+
         const viewportHeight = contents.document.documentElement.clientHeight || window.innerHeight;
-        
+
         // Find absolute top position of the element inside the document
         let top = 0;
         let current = el;
@@ -339,7 +363,7 @@ class TTSManager {
             top += current.offsetTop || 0;
             current = current.offsetParent;
         }
-        
+
         return Math.floor(top / (viewportHeight || 600));
     }
 
@@ -347,20 +371,56 @@ class TTSManager {
         if (!this.app.reader.rendition) return 0;
         const contents = this.app.reader.rendition.getContents()[0];
         if (!contents) return 0;
-        
-        const scrollLeft = contents.document.documentElement.scrollLeft || contents.document.body.scrollLeft || 0;
-        const viewportWidth = contents.document.documentElement.clientWidth || window.innerWidth;
-        
+
+        const rendition = this.app.reader.rendition;
+        const doc = contents.document;
+        const viewportWidth = doc.documentElement.clientWidth || contents.window.innerWidth || window.innerWidth || 360;
+
+        if (rendition.settings.flow === 'paginated' && typeof rendition.locationOf === 'function') {
+            const location = rendition.currentLocation ? rendition.currentLocation() : null;
+            const cfi = location && location.start ? location.start.cfi : null;
+
+            if (cfi) {
+                try {
+                    const pageLocation = rendition.locationOf(cfi);
+                    if (pageLocation && Number.isFinite(pageLocation.left)) {
+                        return Math.max(0, Math.round(pageLocation.left / viewportWidth));
+                    }
+                } catch (err) {
+                    console.warn("Failed to locate current reader page by CFI", err);
+                }
+            }
+        }
+
+        const scrollLeft = doc.documentElement.scrollLeft || doc.body.scrollLeft || 0;
+
         return Math.round(scrollLeft / (viewportWidth || 360));
     }
 
     findFirstParagraphOnPage(pageIndex) {
+        let firstAhead = -1;
+        let closestIndex = 0;
+        let closestDistance = Number.POSITIVE_INFINITY;
+
         for (let i = 0; i < this.textElements.length; i++) {
-            if (this.getParagraphPageIndex(this.textElements[i]) === pageIndex) {
+            const paragraphPageIndex = this.getParagraphPageIndex(this.textElements[i]);
+
+            if (paragraphPageIndex === pageIndex) {
                 return i;
             }
+
+            if (firstAhead === -1 && paragraphPageIndex > pageIndex) {
+                firstAhead = i;
+            }
+
+            const distance = Math.abs(paragraphPageIndex - pageIndex);
+            if (distance < closestDistance) {
+                closestDistance = distance;
+                closestIndex = i;
+            }
         }
-        return 0;
+
+        return firstAhead !== -1 ? firstAhead : closestIndex;
     }
 
     speakParagraph(index, useFallbackVoice = false) {
